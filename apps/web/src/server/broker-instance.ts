@@ -34,6 +34,7 @@ export function getBroker(): Broker {
     },
     logger: {
       info: (msg, data) => console.log("[broker]", msg, data ?? ""),
+      warn: (msg, data) => console.warn("[broker]", msg, data ?? ""),
       error: (msg, data) => console.error("[broker]", msg, data ?? ""),
     },
   });
