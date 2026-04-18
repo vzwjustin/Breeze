@@ -9,7 +9,11 @@
   "dependencies": {
     "@breeze/broker": "workspace:*",
     "@breeze/common": "workspace:*",
+    "@breeze/connectors": "workspace:*",
     "@breeze/planner": "workspace:*"
   },
-  "devDependencies": { "typescript": "^5.6.0" }
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.6.0"
+  }
 }

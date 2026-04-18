@@ -263,3 +263,63 @@ export interface ConnectorCapabilityMeta {
   idempotent: boolean;
   rateLimit?: { perMinute: number; perDay?: number };
 }
+
+export interface ConnectorTriggerMeta {
+  key: string;
+  connector: string;
+  displayName: string;
+  description: string;
+  itemShape: string;
+}
+
+// ── Recipes (IFTTT-style "if this then that") ─────────────────────────
+export type RecipeStatus = "active" | "paused" | "archived";
+
+/**
+ * A templated action. `inputTemplate` supports `{{item.path.to.value}}`
+ * substitution against the emitted trigger item.
+ */
+export interface RecipeAction {
+  capability: string;
+  inputTemplate: Record<string, unknown>;
+}
+
+export interface Recipe {
+  id: ID;
+  userId: ID;
+  name: string;
+  description?: string;
+  trigger: {
+    key: string;
+    input: Record<string, unknown>;
+    pollSeconds: number;
+  };
+  actions: RecipeAction[];
+  approvalMode: "per_item" | "once_on_create" | "policy";
+  status: RecipeStatus;
+  cursor?: string;
+  lastRunAt?: ISO;
+  nextRunAt?: ISO;
+  createdAt: ISO;
+  updatedAt: ISO;
+}
+
+export interface RecipeRunItemResult {
+  itemKey: string;
+  actions: Array<{
+    capability: string;
+    outcome: "allowed" | "approval_required" | "denied";
+    detail?: string;
+  }>;
+}
+
+export interface RecipeRun {
+  id: ID;
+  recipeId: ID;
+  startedAt: ISO;
+  endedAt?: ISO;
+  items: RecipeRunItemResult[];
+  cursorBefore?: string;
+  cursorAfter?: string;
+  errorMessage?: string;
+}

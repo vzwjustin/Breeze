@@ -83,3 +83,24 @@ export const PostMessageSchema = z.object({
 });
 
 export type PostMessageInput = z.infer<typeof PostMessageSchema>;
+
+// ── Recipes ───────────────────────────────────────────────────────────
+
+export const RecipeActionSchema = z.object({
+  capability: z.string().min(1),
+  inputTemplate: z.record(z.unknown()),
+});
+
+export const CreateRecipeSchema = z.object({
+  name: z.string().min(1).max(120),
+  description: z.string().max(1000).optional(),
+  trigger: z.object({
+    key: z.string().min(1),
+    input: z.record(z.unknown()).default({}),
+    pollSeconds: z.number().int().min(30).max(24 * 60 * 60).default(300),
+  }),
+  actions: z.array(RecipeActionSchema).min(1).max(10),
+  approvalMode: z.enum(["per_item", "once_on_create", "policy"]).default("policy"),
+});
+
+export type CreateRecipeInput = z.infer<typeof CreateRecipeSchema>;
