@@ -1,7 +1,22 @@
 import { z } from "zod";
 import { BreezeError } from "@breeze/common";
 import { registerConnector } from "../registry.js";
-import type { Connector, ConnectorCapability } from "../types.js";
+import type { Connector, ConnectorCapability, ConnectorTokens } from "../types.js";
+import { httpJson, requireEnv, env } from "../http.js";
+
+const API = "https://api.github.com";
+const GH_HEADERS = {
+  "X-GitHub-Api-Version": "2022-11-28",
+  Accept: "application/vnd.github+json",
+};
+
+function splitRepo(repo: string): { owner: string; name: string } {
+  const [owner, name] = repo.split("/");
+  if (!owner || !name) throw new BreezeError("validation", `repo must be "owner/name", got "${repo}"`);
+  return { owner, name };
+}
+
+// ── Capabilities ──────────────────────────────────────────────────────
 
 const listNotifications: ConnectorCapability = {
   key: "github.list_notifications",
@@ -23,7 +38,32 @@ const listNotifications: ConnectorCapability = {
       })
     ),
   }),
-  execute: async () => { throw new BreezeError("unknown", "github.list_notifications not implemented"); },
+  execute: async (input, ctx) => {
+    const { unreadOnly } = input as { unreadOnly: boolean };
+    const rows = await httpJson<
+      Array<{
+        id: string;
+        subject: { title: string; url: string };
+        repository: { full_name: string };
+        reason: string;
+      }>
+    >({
+      url: `${API}/notifications`,
+      query: { all: (!unreadOnly).toString() },
+      headers: GH_HEADERS,
+      bearer: ctx.tokens.accessToken,
+      signal: ctx.signal,
+    });
+    return {
+      notifications: rows.map((n) => ({
+        id: n.id,
+        subject: n.subject.title,
+        repo: n.repository.full_name,
+        url: n.subject.url,
+        reason: n.reason,
+      })),
+    };
+  },
 };
 
 const readIssue: ConnectorCapability = {
@@ -44,7 +84,31 @@ const readIssue: ConnectorCapability = {
     state: z.string(),
     comments: z.array(z.object({ author: z.string(), body: z.string() })),
   }),
-  execute: async () => { throw new BreezeError("unknown", "github.read_issue not implemented"); },
+  execute: async (input, ctx) => {
+    const { repo, number } = input as { repo: string; number: number };
+    const { owner, name } = splitRepo(repo);
+    const [issue, comments] = await Promise.all([
+      httpJson<{ title: string; body: string | null; state: string }>({
+        url: `${API}/repos/${owner}/${name}/issues/${number}`,
+        headers: GH_HEADERS,
+        bearer: ctx.tokens.accessToken,
+        signal: ctx.signal,
+      }),
+      httpJson<Array<{ user: { login: string } | null; body: string | null }>>({
+        url: `${API}/repos/${owner}/${name}/issues/${number}/comments`,
+        query: { per_page: 50 },
+        headers: GH_HEADERS,
+        bearer: ctx.tokens.accessToken,
+        signal: ctx.signal,
+      }),
+    ]);
+    return {
+      title: issue.title,
+      body: issue.body ?? "",
+      state: issue.state,
+      comments: comments.map((c) => ({ author: c.user?.login ?? "ghost", body: c.body ?? "" })),
+    };
+  },
 };
 
 const draftComment: ConnectorCapability = {
@@ -61,7 +125,15 @@ const draftComment: ConnectorCapability = {
     body: z.string(),
   }),
   outputSchema: z.object({ artifactId: z.string() }),
-  execute: async () => { throw new BreezeError("unknown", "github.draft_comment not implemented"); },
+  execute: async (input) => {
+    const { repo, number, body } = input as { repo: string; number: number; body: string };
+    // Drafts are internal artifacts; they are not persisted to GitHub. The
+    // broker records the draft and returns an artifact id; downstream
+    // post_comment consumes it by reference.
+    const artifactId = `gh-draft-${repo.replace("/", "-")}-${number}-${Date.now().toString(36)}`;
+    if (!body.trim()) throw new BreezeError("validation", "Comment body is empty");
+    return { artifactId };
+  },
 };
 
 const postComment: ConnectorCapability = {
@@ -78,7 +150,19 @@ const postComment: ConnectorCapability = {
     body: z.string(),
   }),
   outputSchema: z.object({ commentId: z.string() }),
-  execute: async () => { throw new BreezeError("unknown", "github.post_comment not implemented"); },
+  execute: async (input, ctx) => {
+    const { repo, number, body } = input as { repo: string; number: number; body: string };
+    const { owner, name } = splitRepo(repo);
+    const res = await httpJson<{ id: number }>({
+      url: `${API}/repos/${owner}/${name}/issues/${number}/comments`,
+      method: "POST",
+      headers: GH_HEADERS,
+      bearer: ctx.tokens.accessToken,
+      body: { body },
+      signal: ctx.signal,
+    });
+    return { commentId: String(res.id) };
+  },
 };
 
 const listPullRequests: ConnectorCapability = {
@@ -103,8 +187,77 @@ const listPullRequests: ConnectorCapability = {
       })
     ),
   }),
-  execute: async () => { throw new BreezeError("unknown", "github.list_pull_requests not implemented"); },
+  execute: async (input, ctx) => {
+    const { repo, state } = input as { repo: string; state: "open" | "closed" | "all" };
+    const { owner, name } = splitRepo(repo);
+    const rows = await httpJson<
+      Array<{ number: number; title: string; state: string; user: { login: string } | null }>
+    >({
+      url: `${API}/repos/${owner}/${name}/pulls`,
+      query: { state, per_page: 50 },
+      headers: GH_HEADERS,
+      bearer: ctx.tokens.accessToken,
+      signal: ctx.signal,
+    });
+    return {
+      pullRequests: rows.map((p) => ({
+        number: p.number,
+        title: p.title,
+        author: p.user?.login ?? "ghost",
+        state: p.state,
+      })),
+    };
+  },
 };
+
+// ── OAuth ─────────────────────────────────────────────────────────────
+
+const OAUTH_AUTHORIZE = "https://github.com/login/oauth/authorize";
+const OAUTH_TOKEN = "https://github.com/login/oauth/access_token";
+
+function consentUrl(state: string): string {
+  const clientId = requireEnv("GITHUB_CLIENT_ID");
+  const redirectUri = requireEnv("GITHUB_REDIRECT_URI");
+  const scopes = (env("GITHUB_OAUTH_SCOPES") ?? "notifications,repo").split(",").map((s) => s.trim()).join(" ");
+  const u = new URL(OAUTH_AUTHORIZE);
+  u.searchParams.set("client_id", clientId);
+  u.searchParams.set("redirect_uri", redirectUri);
+  u.searchParams.set("scope", scopes);
+  u.searchParams.set("state", state);
+  u.searchParams.set("allow_signup", "false");
+  return u.toString();
+}
+
+async function exchangeCode(code: string): Promise<ConnectorTokens> {
+  const clientId = requireEnv("GITHUB_CLIENT_ID");
+  const clientSecret = requireEnv("GITHUB_CLIENT_SECRET");
+  const redirectUri = requireEnv("GITHUB_REDIRECT_URI");
+  const res = await fetch(OAUTH_TOKEN, {
+    method: "POST",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, code, redirect_uri: redirectUri }),
+  });
+  if (!res.ok) throw new BreezeError("auth", `GitHub token exchange failed: ${res.status}`);
+  const json = (await res.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    refresh_token_expires_in?: number;
+    error?: string;
+    error_description?: string;
+  };
+  if (json.error || !json.access_token) {
+    throw new BreezeError("auth", `GitHub token exchange rejected: ${json.error_description ?? json.error ?? "unknown"}`);
+  }
+  return {
+    accessToken: json.access_token,
+    refreshToken: json.refresh_token,
+    expiresAt: json.expires_in ? new Date(Date.now() + json.expires_in * 1000) : undefined,
+    raw: json as Record<string, unknown>,
+  };
+}
+
+// ── Connector ─────────────────────────────────────────────────────────
 
 const github: Connector = {
   meta: {
@@ -115,12 +268,25 @@ const github: Connector = {
     icon: "/icons/github.svg",
     oauth: {
       provider: "github",
-      scopes: ["notifications", "repo:read", "repo:write"],
-      consentUrlFactory: (_s) => { throw new BreezeError("unknown", "github OAuth not wired"); },
-      exchangeCode: async (_c) => { throw new BreezeError("unknown", "github OAuth not wired"); },
+      scopes: ["notifications", "repo"],
+      consentUrlFactory: consentUrl,
+      exchangeCode,
     },
   },
-  healthCheck: async () => ({ ok: false, message: "github healthcheck not implemented" }),
+  healthCheck: async (ctx) => {
+    try {
+      const me = await httpJson<{ login: string }>({
+        url: `${API}/user`,
+        headers: GH_HEADERS,
+        bearer: ctx.tokens.accessToken,
+        signal: ctx.signal,
+      });
+      return { ok: true, message: `authenticated as @${me.login}` };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, message: msg };
+    }
+  },
   capabilities: [listNotifications, readIssue, draftComment, postComment, listPullRequests],
 };
 
