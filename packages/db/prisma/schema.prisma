@@ -1,0 +1,427 @@
+// Breeze Prisma schema. Single source of truth for the relational model.
+// See /BLUEPRINT.md §9 for rationale.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Users & sessions (Auth.js compatible) ────────────────────────────
+
+enum Role {
+  USER
+  ADMIN
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  name            String?
+  image           String?
+  role            Role      @default(USER)
+  policyProfileId String?
+  policyProfile   PolicyProfile? @relation("UserPolicyProfile", fields: [policyProfileId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  accounts          Account[]
+  sessions          Session[]
+  chats             Chat[]
+  tasks             Task[]
+  approvals         Approval[]
+  connectorAccounts ConnectorAccount[]
+  memories          Memory[]
+  auditEvents       AuditEvent[]
+  policyProfiles    PolicyProfile[] @relation("PolicyProfileOwner")
+}
+
+model Account {
+  id                 String  @id @default(cuid())
+  userId             String
+  type               String
+  provider           String
+  providerAccountId  String
+  refresh_token      String? @db.Text
+  access_token       String? @db.Text
+  expires_at         Int?
+  token_type         String?
+  scope              String?
+  id_token           String? @db.Text
+  session_state      String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─── Chat & messages ──────────────────────────────────────────────────
+
+model Chat {
+  id         String   @id @default(cuid())
+  userId     String
+  title      String
+  summary    String?
+  archivedAt DateTime?
+  deletedAt  DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+  plans    Plan[]
+  artifacts Artifact[]
+
+  @@index([userId, updatedAt])
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+  TOOL
+}
+
+model Message {
+  id        String      @id @default(cuid())
+  chatId    String
+  role      MessageRole
+  content   Json
+  tokens    Int?
+  createdAt DateTime    @default(now())
+
+  chat Chat  @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  plan Plan?
+
+  @@index([chatId, createdAt])
+}
+
+// ─── Plans & steps ────────────────────────────────────────────────────
+
+enum PlanStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELED
+}
+
+enum RiskLevel {
+  NONE
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum StepKind {
+  RETRIEVE
+  SUMMARIZE
+  DRAFT
+  ACT
+  WAIT
+}
+
+enum StepStatus {
+  PENDING
+  RUNNING
+  AWAITING_APPROVAL
+  COMPLETED
+  FAILED
+  SKIPPED
+}
+
+model Plan {
+  id          String     @id @default(cuid())
+  chatId      String
+  messageId   String     @unique
+  intent      String
+  summaryText String
+  riskLevel   RiskLevel
+  status      PlanStatus @default(RUNNING)
+  createdAt   DateTime   @default(now())
+
+  chat    Chat       @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  message Message    @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  steps   PlanStep[]
+  runs    TaskRun[]
+
+  @@index([chatId])
+}
+
+model PlanStep {
+  id               String     @id @default(cuid())
+  planId           String
+  index            Int
+  kind             StepKind
+  capability       String?
+  input            Json
+  expectedArtifact String?
+  riskLevel        RiskLevel
+  status           StepStatus @default(PENDING)
+  resultSummary    String?
+  errorMessage     String?
+  createdAt        DateTime   @default(now())
+
+  plan       Plan              @relation(fields: [planId], references: [id], onDelete: Cascade)
+  approvals  Approval[]
+  executions ActionExecution[]
+
+  @@index([planId, index])
+}
+
+// ─── Tasks ────────────────────────────────────────────────────────────
+
+enum TaskStatus {
+  ACTIVE
+  PAUSED
+  FAILED
+  ARCHIVED
+}
+
+enum RunStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELED
+  WAITING_APPROVAL
+}
+
+model Task {
+  id              String     @id @default(cuid())
+  userId          String
+  name            String
+  description     String?
+  schedule        Json
+  prompt          String
+  policyProfileId String?
+  approvalMode    String     @default("policy") // per_run | once_on_create | policy
+  status          TaskStatus @default(ACTIVE)
+  lastRunAt       DateTime?
+  nextRunAt       DateTime?
+  triggerTaskId   String?
+  deletedAt       DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  user User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  runs TaskRun[]
+
+  @@index([userId, status])
+}
+
+model TaskRun {
+  id           String    @id @default(cuid())
+  taskId       String
+  triggerRunId String?   @unique
+  status       RunStatus @default(RUNNING)
+  startedAt    DateTime  @default(now())
+  endedAt      DateTime?
+  summary      String?
+  planId       String?
+  errorMessage String?
+
+  task Task  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  plan Plan? @relation(fields: [planId], references: [id])
+
+  @@index([taskId, startedAt(sort: Desc)])
+}
+
+// ─── Approvals ────────────────────────────────────────────────────────
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  DENIED
+  EXPIRED
+  SUPERSEDED
+  CANCELED
+}
+
+model Approval {
+  id            String         @id @default(cuid())
+  userId        String
+  planStepId    String
+  actionRequest Json
+  preview       Json
+  risk          RiskLevel
+  status        ApprovalStatus @default(PENDING)
+  expiresAt     DateTime
+  decidedAt     DateTime?
+  decisionNote  String?
+  waitToken     String?        @unique
+  createdAt     DateTime       @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planStep PlanStep @relation(fields: [planStepId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, expiresAt])
+}
+
+// ─── Connectors ──────────────────────────────────────────────────────
+
+enum ConnectorStatus {
+  ACTIVE
+  NEEDS_REAUTH
+  DISCONNECTED
+  ERROR
+}
+
+model ConnectorAccount {
+  id                String          @id @default(cuid())
+  userId            String
+  connectorKey      String
+  providerAccountId String
+  scopes            String[]
+  status            ConnectorStatus @default(ACTIVE)
+  lastSyncAt        DateTime?
+  lastErrorAt       DateTime?
+  lastError         String?
+  deletedAt         DateTime?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  user       User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  credential ConnectorCredential?
+
+  @@unique([userId, connectorKey])
+}
+
+model ConnectorCredential {
+  id              String    @id @default(cuid())
+  accountId       String    @unique
+  accessTokenEnc  Bytes
+  refreshTokenEnc Bytes?
+  expiresAt       DateTime?
+  keyVersion      Int       @default(1)
+
+  account ConnectorAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+}
+
+// ─── Memory ──────────────────────────────────────────────────────────
+
+enum MemoryType {
+  CONVERSATION
+  USER
+  WORKING
+}
+
+enum MemoryVisibility {
+  USER_VISIBLE
+  INTERNAL
+}
+
+model Memory {
+  id         String           @id @default(cuid())
+  userId     String
+  type       MemoryType
+  scope      String?
+  key        String
+  value      Json
+  source     Json
+  reason     String
+  visibility MemoryVisibility @default(USER_VISIBLE)
+  expiresAt  DateTime?
+  deletedAt  DateTime?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type])
+}
+
+// ─── Artifacts ───────────────────────────────────────────────────────
+
+model Artifact {
+  id         String   @id @default(cuid())
+  chatId     String?
+  planStepId String?
+  kind       String
+  payload    Json
+  blobKey    String?
+  createdAt  DateTime @default(now())
+
+  chat Chat? @relation(fields: [chatId], references: [id], onDelete: SetNull)
+
+  @@index([chatId])
+}
+
+// ─── Action executions (sole mutation record) ────────────────────────
+
+model ActionExecution {
+  id             String    @id @default(cuid())
+  planStepId     String
+  capability     String
+  connectorKey   String
+  input          Json
+  output         Json?
+  errorMessage   String?
+  idempotencyKey String    @unique
+  startedAt      DateTime  @default(now())
+  endedAt        DateTime?
+
+  planStep PlanStep @relation(fields: [planStepId], references: [id], onDelete: Cascade)
+}
+
+// ─── Policy ──────────────────────────────────────────────────────────
+
+model PolicyProfile {
+  id        String   @id @default(cuid())
+  userId    String?
+  name      String
+  kind      String   // "builtin" | "custom"
+  rules     Json     // PolicyRule[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner    User?  @relation("PolicyProfileOwner", fields: [userId], references: [id], onDelete: Cascade)
+  adopters User[] @relation("UserPolicyProfile")
+}
+
+// ─── Audit & outbox ──────────────────────────────────────────────────
+
+model AuditEvent {
+  id            String   @id @default(cuid())
+  userId        String?
+  type          String
+  subjectType   String?
+  subjectId     String?
+  correlationId String?
+  data          Json
+  createdAt     DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([correlationId])
+}
+
+model EventOutbox {
+  id          String    @id @default(cuid())
+  type        String
+  payload     Json
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([publishedAt])
+}
