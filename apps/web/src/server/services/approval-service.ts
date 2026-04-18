@@ -1,35 +1,124 @@
-import type { Approval } from "@breeze/common";
+import { prisma } from "@breeze/db";
+import {
+  BreezeError,
+  type ActionRequest,
+  type Approval,
+  type ApprovalPreview,
+  type ApprovalStatus,
+  type RiskLevel,
+} from "@breeze/common";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const db = prisma as any;
+
+function mapStatus(v: string): ApprovalStatus {
+  return v.toLowerCase() as ApprovalStatus;
+}
+
+function mapRisk(v: string): RiskLevel {
+  return v.toLowerCase() as RiskLevel;
+}
+
+function mapRow(row: Record<string, unknown>): Approval {
+  return {
+    id: String(row.id),
+    userId: String(row.userId),
+    planStepId: String(row.planStepId),
+    actionRequest: row.actionRequest as ActionRequest,
+    preview: row.preview as ApprovalPreview,
+    risk: mapRisk(String(row.risk)),
+    status: mapStatus(String(row.status)),
+    expiresAt: new Date(row.expiresAt as string).toISOString(),
+    decidedAt: row.decidedAt ? new Date(row.decidedAt as string).toISOString() : undefined,
+    decisionNote: (row.decisionNote as string | null) ?? undefined,
+    waitToken: (row.waitToken as string | null) ?? undefined,
+    createdAt: new Date(row.createdAt as string).toISOString(),
+  };
+}
 
 /**
  * Approval service: creation is centralized in the broker; this module
  * exposes read + decision operations used by UI routes.
  */
 export const ApprovalService = {
-  async listPending(_userId: string): Promise<Approval[]> {
-    return [];
+  async listPending(userId: string): Promise<Approval[]> {
+    const rows = await db.approval.findMany({
+      where: { userId, status: "PENDING", expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+    return rows.map(mapRow);
   },
 
-  async listRecentDecided(_userId: string, _limit = 25): Promise<Approval[]> {
-    return [];
+  async listRecentDecided(userId: string, limit = 25): Promise<Approval[]> {
+    const rows = await db.approval.findMany({
+      where: {
+        userId,
+        status: { in: ["APPROVED", "DENIED", "EXPIRED", "CANCELED", "SUPERSEDED"] },
+      },
+      orderBy: { decidedAt: "desc" },
+      take: Math.min(Math.max(1, limit), 200),
+    });
+    return rows.map(mapRow);
   },
 
-  async get(_id: string, _userId: string): Promise<Approval> {
-    throw new Error("ApprovalService.get not implemented");
+  async get(id: string, userId: string): Promise<Approval> {
+    const row = await db.approval.findFirst({ where: { id, userId } });
+    if (!row) throw new BreezeError("not_found", "Approval not found");
+    return mapRow(row);
   },
 
   async approve(
-    _id: string,
-    _userId: string,
-    _opts: { edit?: Record<string, unknown>; note?: string }
+    id: string,
+    userId: string,
+    opts: { edit?: Record<string, unknown>; note?: string } = {}
   ): Promise<Approval> {
-    throw new Error("ApprovalService.approve not implemented");
+    return db.$transaction(async (tx: Record<string, Record<string, Function>>) => {
+      const current = await (tx.approval as { findFirst: Function }).findFirst({ where: { id, userId } });
+      if (!current) throw new BreezeError("not_found", "Approval not found");
+      if (String(current.status) !== "PENDING") {
+        throw new BreezeError("conflict", `Approval already ${String(current.status).toLowerCase()}`);
+      }
+      const existing = current.actionRequest as ActionRequest;
+      const actionRequest: ActionRequest = opts.edit
+        ? { ...existing, input: { ...existing.input, ...opts.edit } }
+        : existing;
+      const row = await (tx.approval as { update: Function }).update({
+        where: { id },
+        data: {
+          status: "APPROVED",
+          decidedAt: new Date(),
+          decisionNote: opts.note ?? null,
+          actionRequest,
+        },
+      });
+      return mapRow(row as Record<string, unknown>);
+    });
   },
 
-  async deny(_id: string, _userId: string, _note?: string): Promise<Approval> {
-    throw new Error("ApprovalService.deny not implemented");
+  async deny(id: string, userId: string, note?: string): Promise<Approval> {
+    const current = await db.approval.findFirst({ where: { id, userId } });
+    if (!current) throw new BreezeError("not_found", "Approval not found");
+    if (String(current.status) !== "PENDING") {
+      throw new BreezeError("conflict", `Approval already ${String(current.status).toLowerCase()}`);
+    }
+    const row = await db.approval.update({
+      where: { id },
+      data: { status: "DENIED", decidedAt: new Date(), decisionNote: note ?? null },
+    });
+    return mapRow(row);
   },
 
-  async cancel(_id: string, _userId: string): Promise<Approval> {
-    throw new Error("ApprovalService.cancel not implemented");
+  async cancel(id: string, userId: string): Promise<Approval> {
+    const current = await db.approval.findFirst({ where: { id, userId } });
+    if (!current) throw new BreezeError("not_found", "Approval not found");
+    if (String(current.status) !== "PENDING") {
+      throw new BreezeError("conflict", `Approval already ${String(current.status).toLowerCase()}`);
+    }
+    const row = await db.approval.update({
+      where: { id },
+      data: { status: "CANCELED", decidedAt: new Date() },
+    });
+    return mapRow(row);
   },
 };

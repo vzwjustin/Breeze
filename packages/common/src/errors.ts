@@ -16,7 +16,7 @@ export type BreezeErrorCode =
 export class BreezeError extends Error {
   readonly code: BreezeErrorCode;
   readonly retryable: boolean;
-  readonly cause?: unknown;
+  override readonly cause?: unknown;
   readonly details?: Record<string, unknown>;
 
   constructor(

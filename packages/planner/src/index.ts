@@ -40,7 +40,7 @@ export async function plan(
   const systemPrompt = buildSystemPrompt(ctx);
   const userPrompt = buildUserPrompt(ctx);
 
-  const raw = await deps.ai.completeJson({
+  const raw = await deps.ai.completeJson<Record<string, unknown>>({
     model: ctx.model,
     system: systemPrompt,
     user: userPrompt,
@@ -49,16 +49,16 @@ export async function plan(
 
   const parsed = PlanSchema.safeParse({
     ...raw,
-    id: raw?.id ?? newId(),
+    id: (raw?.id as string | undefined) ?? newId(),
     chatId: ctx.chatId,
     messageId: ctx.messageId,
-    createdAt: raw?.createdAt ?? new Date().toISOString(),
+    createdAt: (raw?.createdAt as string | undefined) ?? new Date().toISOString(),
   });
 
   if (parsed.success) return parsed.data;
 
   // Repair-retry once.
-  const repaired = await deps.ai.completeJson({
+  const repaired = await deps.ai.completeJson<Record<string, unknown>>({
     model: ctx.model,
     system: systemPrompt,
     user: `${userPrompt}\n\nYour previous response failed validation: ${parsed.error.message}. Return a corrected JSON object.`,
@@ -67,7 +67,7 @@ export async function plan(
 
   const repairedParsed = PlanSchema.safeParse({
     ...repaired,
-    id: repaired?.id ?? newId(),
+    id: (repaired?.id as string | undefined) ?? newId(),
     chatId: ctx.chatId,
     messageId: ctx.messageId,
     createdAt: new Date().toISOString(),
