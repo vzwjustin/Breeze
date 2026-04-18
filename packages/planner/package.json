@@ -1,0 +1,16 @@
+{
+  "name": "@breeze/planner",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": { "typecheck": "tsc --noEmit" },
+  "dependencies": {
+    "@breeze/ai": "workspace:*",
+    "@breeze/common": "workspace:*",
+    "@breeze/connectors": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": { "typescript": "^5.6.0" }
+}
