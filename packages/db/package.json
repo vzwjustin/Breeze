@@ -9,20 +9,28 @@
     ".": "./src/index.ts",
     "./crypto": "./src/crypto.ts"
   },
+  "prisma": {
+    "schema": "prisma/schema.prisma"
+  },
   "scripts": {
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:studio": "prisma studio",
     "generate": "prisma generate",
     "migrate": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
     "studio": "prisma studio",
-    "typecheck": "tsc --noEmit"
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@breeze/common": "workspace:*",
-    "@prisma/client": "^5.19.0"
+    "@prisma/client": "^5.22.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "prisma": "^5.19.0",
-    "typescript": "^5.6.0"
+    "prisma": "^5.22.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
   }
 }

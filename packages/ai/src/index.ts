@@ -60,6 +60,7 @@ export function createAIRouter(cfg: AIRouterConfig): AIProvider {
 // Provider adapters are implemented per-provider file; stubs ship here so
 // the repository typechecks without an API key.
 export { openaiProvider } from "./openai.js";
-export { anthropicProvider } from "./anthropic.js";
+export { anthropicProvider, completeWithTools, streamComplete } from "./anthropic.js";
+export type { ToolSpec, ToolUseBlock, CompleteWithToolsArgs, CompleteWithToolsResult, StreamCompleteArgs, StreamCompleteEvent } from "./anthropic.js";
 export { googleProvider } from "./google.js";
 export { openrouterProvider } from "./openrouter.js";

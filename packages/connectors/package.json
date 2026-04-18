@@ -10,7 +10,7 @@
     "./registry": "./src/registry.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@breeze/common": "workspace:*",

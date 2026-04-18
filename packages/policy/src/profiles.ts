@@ -48,8 +48,8 @@ export const AUTO_RUN_SAFE_ACTIONS: PolicyProfile = {
   rules: [
     { id: "auto.allow_reads", decision: "allow", reason: "Read access", when: { mutatesState: false } },
     { id: "auto.allow_drafts", decision: "allow", capability: "*.draft_*", reason: "Drafts are safe" },
-    { id: "auto.allow_low_mut", decision: "allow", when: { mutatesState: true, sensitivityAtLeast: "low" }, reason: "Low-risk mutation auto-run" },
     { id: "auto.require_high", decision: "require_approval", when: { sensitivityAtLeast: "high" }, reason: "High-risk mutation needs review" },
+    { id: "auto.allow_low_mut", decision: "allow", when: { mutatesState: true, sensitivityAtLeast: "low" }, reason: "Low-risk mutation auto-run" },
   ],
 };
 
@@ -58,8 +58,8 @@ export const POWER_USER: PolicyProfile = {
   name: "Power User",
   kind: "builtin",
   rules: [
-    { id: "pu.allow_most", decision: "allow", reason: "Trusted profile" },
     { id: "pu.require_critical", decision: "require_approval", when: { sensitivityAtLeast: "critical" }, reason: "Critical actions still need confirmation" },
+    { id: "pu.allow_most", decision: "allow", reason: "Trusted profile" },
   ],
 };
 

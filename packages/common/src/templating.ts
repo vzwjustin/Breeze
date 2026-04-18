@@ -18,7 +18,7 @@ function lookup(scope: TemplateScope, path: string): unknown {
   const parts = path.split(".");
   let cur: unknown = scope;
   for (const p of parts) {
-    if (cur && typeof cur === "object" && p in (cur as Record<string, unknown>)) {
+    if (cur && typeof cur === "object" && Object.hasOwn(cur as object, p)) {
       cur = (cur as Record<string, unknown>)[p];
     } else {
       return undefined;

@@ -52,6 +52,13 @@ function parseMessage(msg: {
   return { id: msg.id, from: get("from"), subject: get("subject"), body };
 }
 
+function sanitizeHeaderValue(v: string): string {
+  if (/[\r\n\0]/.test(v)) {
+    throw new BreezeError("validation", "Header injection detected");
+  }
+  return v;
+}
+
 // ── Capabilities ──────────────────────────────────────────────────────
 
 const listThreads: ConnectorCapability = {
@@ -142,10 +149,10 @@ const draftReply: ConnectorCapability = {
     if (!last) throw new BreezeError("not_found", `Thread ${threadId} has no messages`);
     const headers = last.payload?.headers ?? [];
     const get = (n: string) => headers.find((h) => h.name.toLowerCase() === n.toLowerCase())?.value ?? "";
-    const to = get("From");
-    const subject = get("Subject");
-    const inReplyTo = get("Message-ID");
-    const references = [get("References"), inReplyTo].filter(Boolean).join(" ");
+    const to = sanitizeHeaderValue(get("From"));
+    const subject = sanitizeHeaderValue(get("Subject"));
+    const inReplyTo = sanitizeHeaderValue(get("Message-ID"));
+    const references = sanitizeHeaderValue([get("References"), inReplyTo].filter(Boolean).join(" "));
 
     const raw = b64urlEncode(
       [
@@ -197,10 +204,10 @@ const sendReply: ConnectorCapability = {
     if (!last) throw new BreezeError("not_found", `Thread ${threadId} has no messages`);
     const headers = last.payload?.headers ?? [];
     const get = (n: string) => headers.find((h) => h.name.toLowerCase() === n.toLowerCase())?.value ?? "";
-    const to = get("From");
-    const subject = get("Subject");
-    const inReplyTo = get("Message-ID");
-    const references = [get("References"), inReplyTo].filter(Boolean).join(" ");
+    const to = sanitizeHeaderValue(get("From"));
+    const subject = sanitizeHeaderValue(get("Subject"));
+    const inReplyTo = sanitizeHeaderValue(get("Message-ID"));
+    const references = sanitizeHeaderValue([get("References"), inReplyTo].filter(Boolean).join(" "));
     const raw = b64urlEncode(
       [
         `To: ${to}`,

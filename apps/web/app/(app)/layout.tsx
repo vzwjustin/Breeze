@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
 
 /**
  * Authenticated app shell. In production this wraps everything in
@@ -8,20 +9,20 @@ import type { ReactNode } from "react";
 export default function AppShell({ children }: { children: ReactNode }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "240px 1fr", minHeight: "100dvh" }}>
-      <aside style={{ borderRight: "1px solid #eee", padding: 16 }}>
+      <aside aria-label="Primary navigation" style={{ borderRight: "1px solid #eee", padding: 16 }}>
         <nav>
           <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "grid", gap: 8 }}>
-            <li><a href="/">Home</a></li>
-            <li><a href="/chat">Chat</a></li>
-            <li><a href="/tasks">Tasks</a></li>
-            <li><a href="/approvals">Approvals</a></li>
-            <li><a href="/connectors">Connectors</a></li>
-            <li><a href="/memory">Memory</a></li>
-            <li><a href="/settings">Settings</a></li>
+            <li><Link href="/">Home</Link></li>
+            <li><Link href="/chat">Chat</Link></li>
+            <li><Link href="/tasks">Tasks</Link></li>
+            <li><Link href="/approvals">Approvals</Link></li>
+            <li><Link href="/connectors">Connectors</Link></li>
+            <li><Link href="/memory">Memory</Link></li>
+            <li><Link href="/settings">Settings</Link></li>
           </ul>
         </nav>
       </aside>
-      <main style={{ padding: 24 }}>{children}</main>
+      <main id="main-content" style={{ padding: 24 }}>{children}</main>
     </div>
   );
 }

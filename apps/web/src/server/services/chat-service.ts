@@ -129,7 +129,7 @@ export const ChatService = {
       userId,
       chatId: chat.id,
       messageId: latestMessage.id,
-      model: process.env.BREEZE_PLANNER_MODEL ?? "gpt-4o-mini",
+      model: process.env.BREEZE_PLANNER_MODEL ?? "claude-sonnet-4-6",
       history,
       memoryPack,
       catalog: publicCatalog(connected),

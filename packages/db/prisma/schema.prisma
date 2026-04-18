@@ -1,5 +1,10 @@
 // Breeze Prisma schema. Single source of truth for the relational model.
 // See /BLUEPRINT.md §9 for rationale.
+//
+// How to apply changes:
+//   pnpm --filter @breeze/db db:generate   # regenerate PrismaClient types
+//   pnpm --filter @breeze/db db:migrate    # create and apply a new migration (dev only)
+//   pnpm --filter @breeze/db db:studio     # open Prisma Studio GUI
 
 generator client {
   provider = "prisma-client-js"
@@ -10,7 +15,7 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ─── Users & sessions (Auth.js compatible) ────────────────────────────
+// ─── Users & sessions (NextAuth v5 / Auth.js compatible) ─────────────────────
 
 enum Role {
   USER
@@ -18,11 +23,11 @@ enum Role {
 }
 
 model User {
-  id              String    @id @default(cuid())
-  email           String    @unique
+  id              String         @id @default(cuid())
+  email           String         @unique
   name            String?
   image           String?
-  role            Role      @default(USER)
+  role            Role           @default(USER)
   policyProfileId String?
   policyProfile   PolicyProfile? @relation("UserPolicyProfile", fields: [policyProfileId], references: [id])
 
@@ -37,27 +42,30 @@ model User {
   connectorAccounts ConnectorAccount[]
   memories          Memory[]
   auditEvents       AuditEvent[]
-  policyProfiles    PolicyProfile[] @relation("PolicyProfileOwner")
+  auditLogs         AuditLog[]
+  policyProfiles    PolicyProfile[]    @relation("PolicyProfileOwner")
   recipes           Recipe[]
+  scheduledTasks    ScheduledTask[]
 }
 
 model Account {
-  id                 String  @id @default(cuid())
-  userId             String
-  type               String
-  provider           String
-  providerAccountId  String
-  refresh_token      String? @db.Text
-  access_token       String? @db.Text
-  expires_at         Int?
-  token_type         String?
-  scope              String?
-  id_token           String? @db.Text
-  session_state      String?
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerAccountId])
+  @@index([userId])
 }
 
 model Session {
@@ -65,7 +73,10 @@ model Session {
   sessionToken String   @unique
   userId       String
   expires      DateTime
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model VerificationToken {
@@ -76,23 +87,24 @@ model VerificationToken {
   @@unique([identifier, token])
 }
 
-// ─── Chat & messages ──────────────────────────────────────────────────
+// ─── Chat & messages ──────────────────────────────────────────────────────────
 
 model Chat {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   userId     String
   title      String
   summary    String?
   archivedAt DateTime?
   deletedAt  DateTime?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  messages Message[]
-  plans    Plan[]
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  Message[]
+  plans     Plan[]
   artifacts Artifact[]
 
+  @@index([userId])
   @@index([userId, updatedAt])
 }
 
@@ -114,10 +126,11 @@ model Message {
   chat Chat  @relation(fields: [chatId], references: [id], onDelete: Cascade)
   plan Plan?
 
+  @@index([chatId])
   @@index([chatId, createdAt])
 }
 
-// ─── Plans & steps ────────────────────────────────────────────────────
+// ─── Plans & steps ────────────────────────────────────────────────────────────
 
 enum PlanStatus {
   RUNNING
@@ -169,6 +182,9 @@ model Plan {
   @@index([chatId])
 }
 
+// PlanRow is exposed as an alias in application code — the underlying model is Plan.
+// Use Plan directly in Prisma queries.
+
 model PlanStep {
   id               String     @id @default(cuid())
   planId           String
@@ -187,10 +203,11 @@ model PlanStep {
   approvals  Approval[]
   executions ActionExecution[]
 
+  @@index([planId])
   @@index([planId, index])
 }
 
-// ─── Tasks ────────────────────────────────────────────────────────────
+// ─── Tasks (scheduled / recurring) ───────────────────────────────────────────
 
 enum TaskStatus {
   ACTIVE
@@ -227,6 +244,7 @@ model Task {
   user User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   runs TaskRun[]
 
+  @@index([userId])
   @@index([userId, status])
 }
 
@@ -244,10 +262,33 @@ model TaskRun {
   task Task  @relation(fields: [taskId], references: [id], onDelete: Cascade)
   plan Plan? @relation(fields: [planId], references: [id])
 
+  @@index([taskId])
   @@index([taskId, startedAt(sort: Desc)])
 }
 
-// ─── Approvals ────────────────────────────────────────────────────────
+// ScheduledTask is a lightweight cron-style entry used by the scheduler process
+// to track next-fire times independently of user-facing Tasks.
+model ScheduledTask {
+  id          String    @id @default(cuid())
+  userId      String
+  taskId      String?   // optional link to Task
+  name        String
+  cronExpr    String?   // null for one-shot
+  tz          String    @default("UTC")
+  nextRunAt   DateTime
+  lastRunAt   DateTime?
+  enabled     Boolean   @default(true)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([nextRunAt])
+}
+
+// ─── Approvals ────────────────────────────────────────────────────────────────
 
 enum ApprovalStatus {
   PENDING
@@ -275,10 +316,30 @@ model Approval {
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   planStep PlanStep @relation(fields: [planStepId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
   @@index([userId, status, expiresAt])
 }
 
-// ─── Connectors ──────────────────────────────────────────────────────
+// ─── Action executions (idempotent mutation record) ───────────────────────────
+
+model ActionExecution {
+  id             String    @id @default(cuid())
+  planStepId     String
+  capability     String
+  connectorKey   String
+  input          Json
+  output         Json?
+  errorMessage   String?
+  idempotencyKey String    @unique
+  startedAt      DateTime  @default(now())
+  endedAt        DateTime?
+
+  planStep PlanStep @relation(fields: [planStepId], references: [id], onDelete: Cascade)
+
+  @@index([planStepId])
+}
+
+// ─── Connectors ───────────────────────────────────────────────────────────────
 
 enum ConnectorStatus {
   ACTIVE
@@ -305,20 +366,90 @@ model ConnectorAccount {
   credential ConnectorCredential?
 
   @@unique([userId, connectorKey])
+  @@index([userId])
 }
 
+// encryptedTokens holds the AES-256-GCM ciphertext blob (see packages/db/src/crypto.ts).
+// Layout: [version (1) | iv (12) | tag (16) | ciphertext].
+// Rotate keys by running packages/db/scripts/rotate-keys.ts.
 model ConnectorCredential {
   id              String    @id @default(cuid())
   accountId       String    @unique
-  accessTokenEnc  Bytes
-  refreshTokenEnc Bytes?
-  expiresAt       DateTime?
+  encryptedTokens Bytes                   // full OAuth token bundle, encrypted
   keyVersion      Int       @default(1)
+  expiresAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   account ConnectorAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
 }
 
-// ─── Memory ──────────────────────────────────────────────────────────
+// ─── Recipes (IFTTT-style trigger → actions) ──────────────────────────────────
+
+enum RecipeStatus {
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+model Recipe {
+  id            String       @id @default(cuid())
+  userId        String
+  name          String
+  description   String?
+  trigger       Json         // { key, input, pollSeconds }
+  actions       Json         // RecipeAction[]
+  approvalMode  String       @default("policy") // per_item | once_on_create | policy
+  status        RecipeStatus @default(ACTIVE)
+  cursor        String?
+  lastRunAt     DateTime?
+  nextRunAt     DateTime?
+  triggerTaskId String?
+  deletedAt     DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  runs    RecipeRun[]
+  cursors RecipeCursor[]
+
+  @@index([userId])
+  @@index([userId, status])
+  @@index([nextRunAt])
+}
+
+model RecipeRun {
+  id           String    @id @default(cuid())
+  recipeId     String
+  startedAt    DateTime  @default(now())
+  endedAt      DateTime?
+  cursorBefore String?
+  cursorAfter  String?
+  items        Json      @default("[]") // RecipeRunItemResult[]
+  errorMessage String?
+
+  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@index([recipeId])
+  @@index([recipeId, startedAt(sort: Desc)])
+}
+
+// RecipeCursor persists the stable polling cursor between runs per trigger key,
+// allowing multiple triggers on the same Recipe to advance independently.
+model RecipeCursor {
+  id         String   @id @default(cuid())
+  recipeId   String
+  triggerKey String
+  cursor     String
+  updatedAt  DateTime @updatedAt
+
+  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@unique([recipeId, triggerKey])
+  @@index([recipeId])
+}
+
+// ─── Memory ───────────────────────────────────────────────────────────────────
 
 enum MemoryType {
   CONVERSATION
@@ -348,10 +479,11 @@ model Memory {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId])
   @@index([userId, type])
 }
 
-// ─── Artifacts ───────────────────────────────────────────────────────
+// ─── Artifacts ────────────────────────────────────────────────────────────────
 
 model Artifact {
   id         String   @id @default(cuid())
@@ -367,24 +499,7 @@ model Artifact {
   @@index([chatId])
 }
 
-// ─── Action executions (sole mutation record) ────────────────────────
-
-model ActionExecution {
-  id             String    @id @default(cuid())
-  planStepId     String
-  capability     String
-  connectorKey   String
-  input          Json
-  output         Json?
-  errorMessage   String?
-  idempotencyKey String    @unique
-  startedAt      DateTime  @default(now())
-  endedAt        DateTime?
-
-  planStep PlanStep @relation(fields: [planStepId], references: [id], onDelete: Cascade)
-}
-
-// ─── Policy ──────────────────────────────────────────────────────────
+// ─── Policy ───────────────────────────────────────────────────────────────────
 
 model PolicyProfile {
   id        String   @id @default(cuid())
@@ -397,9 +512,11 @@ model PolicyProfile {
 
   owner    User?  @relation("PolicyProfileOwner", fields: [userId], references: [id], onDelete: Cascade)
   adopters User[] @relation("UserPolicyProfile")
+
+  @@index([userId])
 }
 
-// ─── Audit & outbox ──────────────────────────────────────────────────
+// ─── Audit & outbox ───────────────────────────────────────────────────────────
 
 model AuditEvent {
   id            String   @id @default(cuid())
@@ -413,8 +530,29 @@ model AuditEvent {
 
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
+  @@index([userId])
   @@index([userId, createdAt(sort: Desc)])
   @@index([correlationId])
+}
+
+// AuditLog is a structured append-only record for compliance purposes.
+// Each row captures the actor, action, and resource that changed.
+model AuditLog {
+  id           String   @id @default(cuid())
+  userId       String?
+  action       String   // e.g. "connector.connected", "approval.granted"
+  resourceType String?
+  resourceId   String?
+  meta         Json     @default("{}")
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([resourceType, resourceId])
 }
 
 model EventOutbox {
@@ -425,51 +563,4 @@ model EventOutbox {
   createdAt   DateTime  @default(now())
 
   @@index([publishedAt])
-}
-
-// ─── Recipes (IFTTT-style) ───────────────────────────────────────────
-
-enum RecipeStatus {
-  ACTIVE
-  PAUSED
-  ARCHIVED
-}
-
-model Recipe {
-  id            String       @id @default(cuid())
-  userId        String
-  name          String
-  description   String?
-  trigger       Json         // { key, input, pollSeconds }
-  actions       Json         // RecipeAction[]
-  approvalMode  String       @default("policy") // per_item | once_on_create | policy
-  status        RecipeStatus @default(ACTIVE)
-  cursor        String?
-  lastRunAt     DateTime?
-  nextRunAt     DateTime?
-  triggerTaskId String?
-  deletedAt     DateTime?
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
-
-  user User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  runs RecipeRun[]
-
-  @@index([userId, status])
-  @@index([nextRunAt])
-}
-
-model RecipeRun {
-  id           String    @id @default(cuid())
-  recipeId     String
-  startedAt    DateTime  @default(now())
-  endedAt      DateTime?
-  cursorBefore String?
-  cursorAfter  String?
-  items        Json      @default("[]") // RecipeRunItemResult[]
-  errorMessage String?
-
-  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
-
-  @@index([recipeId, startedAt(sort: Desc)])
 }

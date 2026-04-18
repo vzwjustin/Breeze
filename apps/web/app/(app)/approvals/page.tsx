@@ -1,5 +1,6 @@
 import { ApprovalService } from "@/server/services/approval-service";
 import { requireUser } from "@/server/auth/require-user";
+import { ApprovalActions } from "./approval-actions";
 
 export default async function ApprovalsPage() {
   const { user } = await requireUser();
@@ -12,12 +13,13 @@ export default async function ApprovalsPage() {
 
       <h2 style={{ marginTop: 24 }}>Pending</h2>
       {pending.length === 0 ? (
-        <p>Nothing waiting on you. 🌱</p>
+        <p>Nothing waiting on you.</p>
       ) : (
         <ul>
           {pending.map((a) => (
-            <li key={a.id}>
+            <li key={a.id} style={{ marginBottom: 16 }}>
               <strong>{a.preview.title}</strong> — {a.preview.targetSummary} (risk: {a.risk})
+              <ApprovalActions approval={a} />
             </li>
           ))}
         </ul>

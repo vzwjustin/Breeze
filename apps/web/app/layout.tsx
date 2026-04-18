@@ -8,7 +8,13 @@ export const metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        {/* Skip-nav: global CSS should define .sr-only as visually hidden */}
+        <a href="#main-content" className="sr-only">
+          Skip to content
+        </a>
+        {children}
+      </body>
     </html>
   );
 }

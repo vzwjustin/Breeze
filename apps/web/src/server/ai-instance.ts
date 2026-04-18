@@ -6,6 +6,7 @@ import {
   openrouterProvider,
   type AIProvider,
 } from "@breeze/ai";
+import { BreezeError } from "@breeze/common";
 
 type ProviderKind = "openai" | "anthropic" | "google" | "openrouter";
 
@@ -23,9 +24,12 @@ function resolveDefault(): ProviderKind {
   }
   if (process.env.OPENAI_API_KEY) return "openai";
   if (process.env.ANTHROPIC_API_KEY) return "anthropic";
-  if (process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY) return "google";
+  if (process.env.GOOGLE_API_KEY || process.env.GOOGLE_AI_API_KEY || process.env.GEMINI_API_KEY) return "google";
   if (process.env.OPENROUTER_API_KEY) return "openrouter";
-  return "openai";
+  throw new BreezeError(
+    "unknown",
+    "No AI provider configured — set one of ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY",
+  );
 }
 
 function resolveFallback(primary: ProviderKind): ProviderKind[] {
@@ -33,12 +37,30 @@ function resolveFallback(primary: ProviderKind): ProviderKind[] {
 }
 
 /**
- * Returns the configured AI provider for a given user. Reads the user's
- * default from env; per-user overrides will be read from Settings once
- * persisted user preferences land.
+ * Returns the configured AI provider for a given user. Reads per-user
+ * aiProvider preference from the database; falls back to env-based default.
  */
-export function getAI(_userId: string): AIProvider {
-  const primary = resolveDefault();
+export async function getAI(userId: string): Promise<AIProvider> {
+  // Lazy import to avoid circular init at module load time.
+  const { prisma } = await import("@breeze/db");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const db = prisma as any;
+
+  let primary = resolveDefault();
+  try {
+    const user = await db.user.findUnique({
+      where: { id: userId },
+      select: { preferences: true },
+    });
+    const prefs = user?.preferences as { aiProvider?: string } | null | undefined;
+    const pref = prefs?.aiProvider?.toLowerCase();
+    if (pref === "openai" || pref === "anthropic" || pref === "google" || pref === "openrouter") {
+      primary = pref as ProviderKind;
+    }
+  } catch {
+    // DB unavailable — use env default.
+  }
+
   return createAIRouter({
     defaultProvider: primary,
     providers: PROVIDERS,

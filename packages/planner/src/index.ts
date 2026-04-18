@@ -7,6 +7,11 @@
  *   - NO side effects. No connector calls. No mutation.
  *   - Output is Zod-validated; on failure, repair-retry once.
  *   - Falls back to `intent: "chat"` if validation repeatedly fails.
+ *
+ * Strategy:
+ *   - For Anthropic providers, uses tool-use with a `submit_plan` tool whose
+ *     input_schema mirrors PlanSchema. This avoids fragile JSON extraction.
+ *   - For all other providers, falls back to the original completeJson path.
  */
 import {
   PlanSchema,
@@ -16,6 +21,7 @@ import {
   type MemoryRecord,
 } from "@breeze/common";
 import type { AIProvider } from "@breeze/ai";
+import { completeWithTools } from "@breeze/ai";
 import type { PublicCapability } from "@breeze/connectors";
 
 export interface PlannerContext {
@@ -33,10 +39,84 @@ export interface PlannerDeps {
   ai: AIProvider;
 }
 
-export async function plan(
-  ctx: PlannerContext,
-  deps: PlannerDeps
-): Promise<Plan> {
+// ── submit_plan tool schema ────────────────────────────────────────────────────
+
+const SUBMIT_PLAN_TOOL = {
+  name: "submit_plan",
+  description: "Submit the structured plan for this turn. Call exactly once.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      intent: { type: "string", enum: ["chat", "retrieve", "draft", "act", "automate"] },
+      riskLevel: { type: "string", enum: ["none", "low", "medium", "high", "critical"] },
+      summaryText: { type: "string" },
+      steps: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string" },
+            index: { type: "integer", minimum: 0 },
+            kind: { type: "string", enum: ["retrieve", "summarize", "draft", "act", "wait"] },
+            capability: { type: "string" },
+            input: { type: "object" },
+            riskLevel: { type: "string", enum: ["none", "low", "medium", "high", "critical"] },
+            rationale: { type: "string" },
+            dependsOn: { type: "array", items: { type: "string" } },
+          },
+          required: ["id", "index", "kind", "input", "riskLevel", "rationale"],
+        },
+      },
+      requires: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            connector: { type: "string" },
+            capability: { type: "string" },
+          },
+          required: ["connector", "capability"],
+        },
+      },
+      approvalLikelihood: { type: "string", enum: ["none", "low", "likely", "certain"] },
+    },
+    required: ["intent", "riskLevel", "summaryText", "steps", "requires", "approvalLikelihood"],
+  },
+};
+
+// ── Tool-use path (Anthropic) ─────────────────────────────────────────────────
+
+async function planViaToolUse(ctx: PlannerContext): Promise<Plan | null> {
+  try {
+    const result = await completeWithTools({
+      model: ctx.model,
+      system: buildSystemPrompt(ctx),
+      user: buildUserPrompt(ctx),
+      tools: [SUBMIT_PLAN_TOOL],
+      toolChoice: { type: "tool", name: "submit_plan" },
+    });
+
+    const toolBlock = result.toolUseBlocks.find((b) => b.name === "submit_plan");
+    if (!toolBlock) return null;
+
+    const raw = toolBlock.input as Record<string, unknown>;
+    const parsed = PlanSchema.safeParse({
+      ...raw,
+      id: newId(),
+      chatId: ctx.chatId,
+      messageId: ctx.messageId,
+      createdAt: new Date().toISOString(),
+    });
+
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+// ── completeJson fallback path ────────────────────────────────────────────────
+
+async function planViaCompleteJson(ctx: PlannerContext, deps: PlannerDeps): Promise<Plan | null> {
   const systemPrompt = buildSystemPrompt(ctx);
   const userPrompt = buildUserPrompt(ctx);
 
@@ -73,9 +153,20 @@ export async function plan(
     createdAt: new Date().toISOString(),
   });
 
-  if (repairedParsed.success) return repairedParsed.data;
+  return repairedParsed.success ? repairedParsed.data : null;
+}
 
-  return fallbackChatPlan(ctx);
+export async function plan(
+  ctx: PlannerContext,
+  deps: PlannerDeps
+): Promise<Plan> {
+  // Use tool-use for Anthropic; fall back to completeJson for other providers.
+  const result =
+    deps.ai.kind === "anthropic"
+      ? await planViaToolUse(ctx)
+      : await planViaCompleteJson(ctx, deps);
+
+  return result ?? fallbackChatPlan(ctx);
 }
 
 function buildSystemPrompt(ctx: PlannerContext): string {

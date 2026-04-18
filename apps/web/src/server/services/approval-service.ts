@@ -97,28 +97,32 @@ export const ApprovalService = {
   },
 
   async deny(id: string, userId: string, note?: string): Promise<Approval> {
-    const current = await db.approval.findFirst({ where: { id, userId } });
-    if (!current) throw new BreezeError("not_found", "Approval not found");
-    if (String(current.status) !== "PENDING") {
-      throw new BreezeError("conflict", `Approval already ${String(current.status).toLowerCase()}`);
-    }
-    const row = await db.approval.update({
-      where: { id },
-      data: { status: "DENIED", decidedAt: new Date(), decisionNote: note ?? null },
+    return db.$transaction(async (tx: Record<string, Record<string, Function>>) => {
+      const current = await (tx.approval as { findFirst: Function }).findFirst({ where: { id, userId } });
+      if (!current) throw new BreezeError("not_found", "Approval not found");
+      if (String(current.status) !== "PENDING") {
+        throw new BreezeError("conflict", `Approval already ${String(current.status).toLowerCase()}`);
+      }
+      const row = await (tx.approval as { update: Function }).update({
+        where: { id },
+        data: { status: "DENIED", decidedAt: new Date(), decisionNote: note ?? null },
+      });
+      return mapRow(row as Record<string, unknown>);
     });
-    return mapRow(row);
   },
 
   async cancel(id: string, userId: string): Promise<Approval> {
-    const current = await db.approval.findFirst({ where: { id, userId } });
-    if (!current) throw new BreezeError("not_found", "Approval not found");
-    if (String(current.status) !== "PENDING") {
-      throw new BreezeError("conflict", `Approval already ${String(current.status).toLowerCase()}`);
-    }
-    const row = await db.approval.update({
-      where: { id },
-      data: { status: "CANCELED", decidedAt: new Date() },
+    return db.$transaction(async (tx: Record<string, Record<string, Function>>) => {
+      const current = await (tx.approval as { findFirst: Function }).findFirst({ where: { id, userId } });
+      if (!current) throw new BreezeError("not_found", "Approval not found");
+      if (String(current.status) !== "PENDING") {
+        throw new BreezeError("conflict", `Approval already ${String(current.status).toLowerCase()}`);
+      }
+      const row = await (tx.approval as { update: Function }).update({
+        where: { id },
+        data: { status: "CANCELED", decidedAt: new Date() },
+      });
+      return mapRow(row as Record<string, unknown>);
     });
-    return mapRow(row);
   },
 };

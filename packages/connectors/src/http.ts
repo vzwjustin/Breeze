@@ -20,6 +20,7 @@ export interface HttpRequest {
   body?: unknown;
   bearer?: string;
   signal?: AbortSignal;
+  allowedHosts?: string[];
 }
 
 function statusToCode(status: number): BreezeErrorCode {
@@ -44,6 +45,13 @@ export function appendQuery(url: string, query?: HttpRequest["query"]): string {
 }
 
 export async function httpJson<T = unknown>(req: HttpRequest): Promise<T> {
+  if (req.allowedHosts !== undefined) {
+    const hostname = new URL(req.url).hostname;
+    if (!req.allowedHosts.includes(hostname)) {
+      throw new BreezeError("validation", "URL host not in allowlist");
+    }
+  }
+
   const headers: Record<string, string> = { Accept: "application/json", ...(req.headers ?? {}) };
   if (req.bearer) headers.Authorization = `Bearer ${req.bearer}`;
   if (req.body !== undefined && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
@@ -57,9 +65,10 @@ export async function httpJson<T = unknown>(req: HttpRequest): Promise<T> {
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new BreezeError(statusToCode(res.status), `${req.method ?? "GET"} ${req.url} failed: ${res.status} ${text.slice(0, 500)}`, {
+    console.error("[http]", `${req.method ?? "GET"} ${req.url} failed: ${res.status}`, text.slice(0, 500));
+    throw new BreezeError(statusToCode(res.status), `${req.method ?? "GET"} ${req.url} failed: ${res.status}`, {
       retryable: res.status === 429 || res.status >= 500,
-      details: { status: res.status },
+      details: { status: res.status, body: text.slice(0, 500) },
     });
   }
 

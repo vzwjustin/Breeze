@@ -11,13 +11,13 @@ interface GoogleConfig {
 
 function resolveConfig(): GoogleConfig {
   return {
-    apiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY,
+    apiKey: process.env.GOOGLE_API_KEY ?? process.env.GOOGLE_AI_API_KEY ?? process.env.GEMINI_API_KEY,
     baseUrl: process.env.GOOGLE_BASE_URL ?? DEFAULT_BASE,
   };
 }
 
 function requireKey(cfg: GoogleConfig): string {
-  if (!cfg.apiKey) throw new Error("GOOGLE_API_KEY is not set");
+  if (!cfg.apiKey) throw new Error("GOOGLE_API_KEY (or GOOGLE_AI_API_KEY / GEMINI_API_KEY) is not set");
   return cfg.apiKey;
 }
 

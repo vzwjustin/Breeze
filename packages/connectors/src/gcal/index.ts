@@ -119,7 +119,19 @@ const updateEvent: ConnectorCapability = {
   inputSchema: z.object({
     calendarId: z.string().default("primary"),
     eventId: z.string(),
-    patch: z.record(z.unknown()),
+    patch: z.object({
+      summary: z.string().optional(),
+      description: z.string().optional(),
+      location: z.string().optional(),
+      start: z.union([
+        z.object({ dateTime: z.string(), timeZone: z.string().optional() }),
+        z.object({ date: z.string() }),
+      ]).optional(),
+      end: z.union([
+        z.object({ dateTime: z.string(), timeZone: z.string().optional() }),
+        z.object({ date: z.string() }),
+      ]).optional(),
+    }).partial().strict(),
   }),
   outputSchema: z.object({ ok: z.boolean() }),
   execute: async (input, ctx) => {

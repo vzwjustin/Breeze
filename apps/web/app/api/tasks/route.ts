@@ -36,8 +36,10 @@ function nextRunAt(schedule: TaskSchedule): Date | null {
   return null;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const { user } = await requireUser();
+  const include = req.nextUrl.searchParams.get("include");
+
   const rows = await db.task.findMany({
     where: { userId: user.id, deletedAt: null },
     orderBy: { updatedAt: "desc" },
@@ -56,7 +58,30 @@ export async function GET() {
       updatedAt: true,
     },
   });
-  return NextResponse.json({ tasks: rows });
+
+  let recentFailures: unknown[] = [];
+  if (include === "failures") {
+    recentFailures = await db.taskRun
+      .findMany({
+        where: { task: { userId: user.id }, status: "failed" },
+        orderBy: { startedAt: "desc" },
+        take: 50,
+        select: {
+          id: true,
+          taskId: true,
+          status: true,
+          errorMessage: true,
+          startedAt: true,
+          endedAt: true,
+        },
+      })
+      .then((runs: Array<Record<string, unknown>>) =>
+        runs.map((r) => ({ ...r, kind: "failed" as const })),
+      )
+      .catch(() => []);
+  }
+
+  return NextResponse.json({ tasks: rows, recentFailures });
 }
 
 export async function POST(req: NextRequest) {

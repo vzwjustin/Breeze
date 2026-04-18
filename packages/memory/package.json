@@ -5,7 +5,7 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
-  "scripts": { "typecheck": "tsc --noEmit" },
+  "scripts": { "typecheck": "tsc -p tsconfig.json --noEmit" },
   "dependencies": { "@breeze/common": "workspace:*" },
   "devDependencies": { "typescript": "^5.6.0" }
 }

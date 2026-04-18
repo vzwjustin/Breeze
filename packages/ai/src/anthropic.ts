@@ -1,5 +1,51 @@
 import type { AIProvider, AIStream, CompleteJsonArgs, StreamArgs } from "./index.js";
 
+// ── Tool use types ────────────────────────────────────────────────────────────
+
+export interface ToolSpec {
+  name: string;
+  description: string;
+  input_schema: {
+    type: "object";
+    properties: Record<string, unknown>;
+    required?: string[];
+  };
+}
+
+export interface StreamCompleteArgs {
+  model: string;
+  system?: string;
+  user: string;
+  tools?: ToolSpec[];
+  toolChoice?: "auto" | "any" | { type: "tool"; name: string };
+  signal?: AbortSignal;
+}
+
+export type StreamCompleteEvent =
+  | { type: "delta"; text: string }
+  | { type: "done"; usage: { input_tokens: number; output_tokens: number } };
+
+export interface ToolUseBlock {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface CompleteWithToolsArgs {
+  model: string;
+  system?: string;
+  user: string;
+  tools: ToolSpec[];
+  toolChoice?: "auto" | "any" | { type: "tool"; name: string };
+}
+
+export interface CompleteWithToolsResult {
+  stopReason: string;
+  text?: string;
+  toolUseBlocks: ToolUseBlock[];
+}
+
 declare const process: { env: Record<string, string | undefined> };
 
 const DEFAULT_ENDPOINT = "https://api.anthropic.com/v1/messages";
@@ -30,7 +76,23 @@ function buildHeaders(cfg: AnthropicConfig): Record<string, string> {
     "Content-Type": "application/json",
     "x-api-key": cfg.apiKey,
     "anthropic-version": cfg.version,
+    "anthropic-beta": "prompt-caching-2024-07-31",
   };
+}
+
+/**
+ * Returns a system prompt in the caching block format when it exceeds 1024
+ * characters (large enough to benefit from caching), or as a plain string
+ * otherwise. Pass `undefined` to omit the system field entirely.
+ */
+function buildSystemParam(
+  systemText: string | undefined,
+): Array<{ type: "text"; text: string; cache_control: { type: "ephemeral" } }> | string | undefined {
+  if (!systemText) return undefined;
+  if (systemText.length > 1024) {
+    return [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }];
+  }
+  return systemText;
 }
 
 function extractJson(text: string): string {
@@ -42,19 +104,144 @@ function extractJson(text: string): string {
   return text.trim();
 }
 
+// ── completeWithTools ─────────────────────────────────────────────────────────
+
+export async function completeWithTools(args: CompleteWithToolsArgs): Promise<CompleteWithToolsResult> {
+  const cfg = resolveConfig();
+  const body: Record<string, unknown> = {
+    model: args.model,
+    max_tokens: cfg.maxTokens,
+    messages: [{ role: "user", content: args.user }],
+    tools: args.tools,
+  };
+  if (args.system) body.system = buildSystemParam(args.system);
+  if (args.toolChoice) body.tool_choice = args.toolChoice;
+
+  const res = await fetch(cfg.baseUrl!, {
+    method: "POST",
+    headers: buildHeaders(cfg),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`anthropic completeWithTools failed: ${res.status} ${await res.text()}`);
+  }
+
+  const data = (await res.json()) as {
+    stop_reason?: string;
+    content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>;
+  };
+
+  const toolUseBlocks: ToolUseBlock[] = (data.content ?? [])
+    .filter((b) => b.type === "tool_use")
+    .map((b) => ({
+      type: "tool_use" as const,
+      id: b.id!,
+      name: b.name!,
+      input: b.input ?? {},
+    }));
+
+  const text = data.content?.find((b) => b.type === "text")?.text;
+
+  return {
+    stopReason: data.stop_reason ?? "end_turn",
+    text,
+    toolUseBlocks,
+  };
+}
+
+// ── streamComplete ────────────────────────────────────────────────────────────
+
+export async function* streamComplete(args: StreamCompleteArgs): AsyncIterable<StreamCompleteEvent> {
+  const cfg = resolveConfig();
+  const body: Record<string, unknown> = {
+    model: args.model,
+    max_tokens: cfg.maxTokens,
+    stream: true,
+    messages: [{ role: "user", content: args.user }],
+  };
+  if (args.system) body.system = buildSystemParam(args.system);
+  if (args.tools) body.tools = args.tools;
+  if (args.toolChoice) body.tool_choice = args.toolChoice;
+
+  const res = await fetch(cfg.baseUrl!, {
+    method: "POST",
+    headers: { ...buildHeaders(cfg), Accept: "text/event-stream" },
+    body: JSON.stringify(body),
+    signal: args.signal,
+  });
+  if (!res.ok || !res.body) {
+    throw new Error(`anthropic streamComplete failed: ${res.status} ${await res.text()}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let usage = { input_tokens: 0, output_tokens: 0 };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let sep: number;
+    while ((sep = buffer.indexOf("\n\n")) !== -1) {
+      const frame = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+
+      for (const line of frame.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const raw = line.slice(5).trim();
+        if (!raw) continue;
+        try {
+          const evt = JSON.parse(raw) as {
+            type?: string;
+            delta?: { type?: string; text?: string };
+            message?: { usage?: { input_tokens: number; output_tokens: number } };
+            usage?: { output_tokens: number };
+          };
+
+          if (evt.type === "message_start" && evt.message?.usage) {
+            usage = { ...usage, ...evt.message.usage };
+          }
+          if (evt.type === "message_delta" && evt.usage?.output_tokens !== undefined) {
+            usage = { ...usage, output_tokens: evt.usage.output_tokens };
+          }
+          if (
+            evt.type === "content_block_delta" &&
+            evt.delta?.type === "text_delta" &&
+            evt.delta.text
+          ) {
+            yield { type: "delta", text: evt.delta.text };
+          }
+          if (evt.type === "message_stop") {
+            yield { type: "done", usage };
+            return;
+          }
+        } catch {
+          // ignore malformed frames
+        }
+      }
+    }
+  }
+
+  yield { type: "done", usage };
+}
+
+// ── AIProvider implementation ─────────────────────────────────────────────────
+
 export const anthropicProvider: AIProvider = {
   kind: "anthropic",
 
   async completeJson<T>(args: CompleteJsonArgs): Promise<T> {
     const cfg = resolveConfig();
-    const system = `${args.system}\n\nRespond with a single JSON object named "${args.schemaName}". No prose, no code fences.`;
+    const systemText = `${args.system}\n\nRespond with a single JSON object named "${args.schemaName}". No prose, no code fences.`;
     const res = await fetch(cfg.baseUrl!, {
       method: "POST",
       headers: buildHeaders(cfg),
       body: JSON.stringify({
         model: args.model,
         max_tokens: cfg.maxTokens,
-        system,
+        system: buildSystemParam(systemText),
         messages: [{ role: "user", content: args.user }],
       }),
     });
@@ -90,7 +277,7 @@ export const anthropicProvider: AIProvider = {
               model: args.model,
               max_tokens: cfg.maxTokens,
               stream: true,
-              system: systems.join("\n\n") || undefined,
+              system: buildSystemParam(systems.join("\n\n") || undefined),
               messages: turns,
             }),
             signal: args.signal,

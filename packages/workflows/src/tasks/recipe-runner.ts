@@ -103,6 +103,11 @@ export async function runRecipe(
     const itemResults: RecipeRunItemResult[] = [];
     for (const item of polled.items) {
       const perItem: RecipeRunItemResult = { itemKey: item.key, actions: [] };
+      if (item.data === null || typeof item.data !== "object" || Array.isArray(item.data)) {
+        deps.logger.warn(`recipe ${recipe.id}: item ${item.key} has non-object data; skipping`);
+        itemResults.push(perItem);
+        continue;
+      }
       const scope = { item: item.data as Record<string, unknown>, recipe: { id: recipe.id, name: recipe.name } };
 
       for (let i = 0; i < recipe.actions.length; i++) {
@@ -136,6 +141,9 @@ export async function runRecipe(
           // resolves. The per-item chain is conservative: a user approving
           // later triggers resumeAfterApproval out-of-band.
           break;
+        } else if (outcome.kind === "failed") {
+          perItem.actions.push({ capability: action.capability, outcome: "denied", detail: outcome.errorMessage });
+          break;
         } else {
           perItem.actions.push({ capability: action.capability, outcome: "denied", detail: outcome.reason });
           break;
@@ -146,13 +154,13 @@ export async function runRecipe(
     }
 
     const nextRunAt = new Date(Date.now() + recipe.trigger.pollSeconds * 1000);
-    await deps.recipes.saveCursor(recipe.id, polled.cursor, nextRunAt);
     await deps.runs.complete(run.id, {
       items: itemResults,
       cursorBefore: recipe.cursor,
       cursorAfter: polled.cursor,
       endedAt: new Date().toISOString(),
     });
+    await deps.recipes.saveCursor(recipe.id, polled.cursor, nextRunAt);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     deps.logger.error(`recipe ${recipe.id} failed: ${msg}`);

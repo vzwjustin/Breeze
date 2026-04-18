@@ -1,10 +1,13 @@
 import { createBroker, type Broker } from "@breeze/broker";
+import { createLogger } from "@breeze/common";
 
 /**
  * Singleton broker wired to real ports. In the scaffold this throws —
  * replace with Prisma/Redis-backed implementations.
  */
 let broker: Broker | null = null;
+
+const brokerLogger = createLogger({ component: "broker" });
 
 export function getBroker(): Broker {
   if (broker) return broker;
@@ -33,9 +36,12 @@ export function getBroker(): Broker {
       emit: async () => { /* outbox write goes here */ },
     },
     logger: {
-      info: (msg, data) => console.log("[broker]", msg, data ?? ""),
-      warn: (msg, data) => console.warn("[broker]", msg, data ?? ""),
-      error: (msg, data) => console.error("[broker]", msg, data ?? ""),
+      info: (msg: string, data?: unknown) =>
+        brokerLogger.info(msg, data !== undefined ? (data as Record<string, unknown>) : undefined),
+      warn: (msg: string, data?: unknown) =>
+        brokerLogger.warn(msg, data !== undefined ? (data as Record<string, unknown>) : undefined),
+      error: (msg: string, data?: unknown) =>
+        brokerLogger.error(msg, data !== undefined ? (data as Record<string, unknown>) : undefined),
     },
   });
   return broker;

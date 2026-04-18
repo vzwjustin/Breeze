@@ -4,8 +4,8 @@
  * evaluate(input) -> decision
  *
  * Evaluation order (see BLUEPRINT §12):
- *   1. explicit deny rule
- *   2. explicit allow rule (unless bulk safety triggers)
+ *   1. explicit deny rule (any match wins)
+ *   2. first matching allow / require_approval rule in profile order
  *   3. bulk safety for mutating actions over BULK_SAFETY_THRESHOLD
  *   4. read-only short-circuit
  *   5. default to require_approval (conservative)
@@ -40,6 +40,9 @@ export function evaluate(input: PolicyInput): PolicyDecision {
   }
 
   for (const rule of matchingRules(profile, input)) {
+    if (rule.decision === "require_approval") {
+      return { decision: "require_approval", reason: rule.reason, rule: rule.id };
+    }
     if (rule.decision === "allow" && !triggersBulkSafety(input)) {
       return { decision: "allow", reason: rule.reason, rule: rule.id };
     }

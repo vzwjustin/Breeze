@@ -67,8 +67,11 @@ export function createBroker(ports: BrokerPorts): Broker {
   return {
     async submit(req: ActionRequest): Promise<ActionOutcome> {
       const existing = await ports.executions.findByIdempotencyKey(req.idempotencyKey);
-      if (existing?.ok) {
-        return { kind: "allowed", result: existing };
+      if (existing) {
+        if (existing.ok) {
+          return { kind: "allowed", result: existing };
+        }
+        console.warn("[broker] retrying non-ok idempotency record", req.idempotencyKey);
       }
 
       const cap = requireCapability(req.connector, req.capability);
@@ -149,10 +152,7 @@ async function executeNow(
     const msg = err instanceof Error ? err.message : String(err);
     await ports.executions.fail(executionId, msg);
     await ports.events.emit(envelope("action.failed", { executionId, error: msg }));
-    return {
-      kind: "allowed",
-      result: { ok: false, executionId, errorMessage: msg },
-    };
+    return { kind: "failed", executionId, errorMessage: msg };
   } finally {
     clearTimeout(timeout);
   }

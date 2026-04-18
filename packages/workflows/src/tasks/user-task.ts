@@ -32,8 +32,14 @@ export interface UserTaskDeps {
       | { kind: "allowed"; result: unknown }
       | { kind: "approval_required"; approvalId: ID }
       | { kind: "denied"; reason: string }
+      | { kind: "failed"; executionId: ID; errorMessage: string }
     >;
-    resumeAfterApproval: (approvalId: ID) => Promise<unknown>;
+    resumeAfterApproval: (approvalId: ID) => Promise<
+      | { kind: "allowed"; result: unknown }
+      | { kind: "approval_required"; approvalId: ID }
+      | { kind: "denied"; reason: string }
+      | { kind: "failed"; executionId: ID; errorMessage: string }
+    >;
   };
   wait: {
     forApproval: (approvalId: ID, timeoutMs: number) => Promise<
@@ -61,13 +67,21 @@ export async function runUserTask(payload: UserTaskPayload, deps: UserTaskDeps):
           await deps.tasks.failRun(run.id, `Denied by policy: ${outcome.reason}`);
           return;
         }
+        if (outcome.kind === "failed") {
+          await deps.tasks.failRun(run.id, `Action failed: ${outcome.errorMessage}`);
+          return;
+        }
         if (outcome.kind === "approval_required") {
           const waited = await deps.wait.forApproval(outcome.approvalId, 24 * 60 * 60 * 1000);
           if (!waited.ok) {
             await deps.tasks.failRun(run.id, `Approval ${waited.reason}`);
             return;
           }
-          await deps.broker.resumeAfterApproval(waited.approvalId);
+          const resumeOutcome = await deps.broker.resumeAfterApproval(waited.approvalId);
+          if (resumeOutcome.kind === "failed") {
+            await deps.tasks.failRun(run.id, `Action failed after approval: ${resumeOutcome.errorMessage}`);
+            return;
+          }
         }
       } else {
         await step.run();

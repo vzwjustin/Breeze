@@ -1,7 +1,5 @@
-/**
- * Auth.js wrapper. In production this calls `auth()` from NextAuth v5
- * and throws a 401 if the request is unauthenticated.
- */
+import { auth } from "./config";
+
 export interface AuthedUser {
   id: string;
   email: string;
@@ -13,11 +11,28 @@ export interface AuthedSession {
 }
 
 export async function requireUser(): Promise<AuthedSession> {
-  throw new Error("requireUser() not wired. Implement with @auth/nextjs v5.");
+  const session = await auth();
+  if (!session?.user) {
+    const e: any = new Error("Unauthorized");
+    e.status = 401;
+    throw e;
+  }
+  const u = session.user as any;
+  return {
+    user: {
+      id: u.id,
+      email: u.email!,
+      role: u.role ?? "USER",
+    },
+  };
 }
 
 export async function requireAdmin(): Promise<AuthedSession> {
   const s = await requireUser();
-  if (s.user.role !== "ADMIN") throw new Error("Forbidden");
+  if (s.user.role !== "ADMIN") {
+    const e: any = new Error("Forbidden");
+    e.status = 403;
+    throw e;
+  }
   return s;
 }

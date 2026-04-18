@@ -85,7 +85,8 @@ export interface ActionResult {
 export type ActionOutcome =
   | { kind: "allowed"; result: ActionResult }
   | { kind: "approval_required"; approvalId: ID }
-  | { kind: "denied"; reason: string };
+  | { kind: "denied"; reason: string }
+  | { kind: "failed"; executionId: ID; errorMessage: string };
 
 export interface ActionExecutionRecord {
   id: ID;
@@ -250,6 +251,13 @@ export interface MemoryRecord<V = unknown> {
   updatedAt: ISO;
 }
 
+// ── User Preferences ──────────────────────────────────────────────────
+export interface UserPreferences {
+  aiProvider?: "anthropic" | "openai" | "google" | "openrouter";
+  plannerModel?: string;
+  density?: "compact" | "comfortable";
+}
+
 // ── Connectors ────────────────────────────────────────────────────────
 export type ConnectorKey = "gmail" | "gcal" | "github" | "files";
 
@@ -308,7 +316,7 @@ export interface RecipeRunItemResult {
   itemKey: string;
   actions: Array<{
     capability: string;
-    outcome: "allowed" | "approval_required" | "denied";
+    outcome: "allowed" | "approval_required" | "denied" | "failed";
     detail?: string;
   }>;
 }
