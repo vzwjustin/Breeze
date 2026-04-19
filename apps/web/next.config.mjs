@@ -37,6 +37,25 @@ const nextConfig = {
   experimental: {
     serverActions: { bodySizeLimit: "2mb" },
   },
+  webpack(config, { isServer }) {
+    // Allow TypeScript packages that use ESM-style ".js" import extensions
+    // to resolve correctly when transpiled by Next.js webpack.
+    config.resolve.extensionAlias = {
+      ".js": [".ts", ".tsx", ".js", ".jsx"],
+      ".jsx": [".tsx", ".jsx"],
+      ".mjs": [".mts", ".mjs"],
+      ".cjs": [".cts", ".cjs"],
+    };
+    if (!isServer) {
+      // Stub Node.js built-ins that must never reach the client bundle.
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        crypto: false,
+        buffer: false,
+      };
+    }
+    return config;
+  },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

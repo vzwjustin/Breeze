@@ -1,87 +1,70 @@
-"use client";
-
-import { useEffect, useState } from "react";
+import { requireUser } from "@/server/auth/require-user";
+import { prisma } from "@breeze/db";
+import { TasksClient } from "./tasks-client";
 import type { Task } from "@breeze/common";
 
-interface Execution {
-  id: string;
-  taskId: string;
-  kind: "failed";
-  errorMessage?: string;
-  startedAt: string;
-  originalPayload?: Record<string, unknown>;
-}
+const db = prisma as any;
 
-interface TasksResponse {
-  tasks: Task[];
-  recentFailures?: Execution[];
-}
+export default async function TasksPage() {
+  const { user } = await requireUser();
 
-export default function TasksPage() {
-  const [data, setData] = useState<TasksResponse | null>(null);
-  const [retrying, setRetrying] = useState<Record<string, boolean>>({});
+  const [taskRows, failureRows] = await Promise.all([
+    db.task.findMany({
+      where: { userId: user.id, deletedAt: null },
+      orderBy: { updatedAt: "desc" },
+      take: 200,
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        prompt: true,
+        schedule: true,
+        status: true,
+        lastRunAt: true,
+        nextRunAt: true,
+        approvalMode: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    }),
+    db.taskRun
+      .findMany({
+        where: { task: { userId: user.id }, status: "FAILED" },
+        orderBy: { startedAt: "desc" },
+        take: 20,
+        select: {
+          id: true,
+          taskId: true,
+          status: true,
+          errorMessage: true,
+          startedAt: true,
+        },
+      })
+      .catch(() => []),
+  ]);
 
-  useEffect(() => {
-    fetch("/api/tasks?include=failures")
-      .then((r) => r.json())
-      .then(setData)
-      .catch(() => setData({ tasks: [], recentFailures: [] }));
-  }, []);
+  const tasks: Task[] = taskRows.map((r: any) => ({
+    id: r.id,
+    userId: user.id,
+    name: r.name,
+    description: r.description ?? undefined,
+    prompt: r.prompt,
+    schedule: r.schedule,
+    approvalMode: r.approvalMode,
+    status: r.status.toLowerCase(),
+    lastRunAt: r.lastRunAt?.toISOString(),
+    nextRunAt: r.nextRunAt?.toISOString(),
+    createdAt: r.createdAt.toISOString(),
+    updatedAt: r.updatedAt.toISOString(),
+  }));
 
-  const retry = async (exec: Execution) => {
-    setRetrying((prev) => ({ ...prev, [exec.id]: true }));
-    try {
-      await fetch("/api/tasks", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(exec.originalPayload ?? {}),
-      });
-      setData((prev) =>
-        prev
-          ? { ...prev, recentFailures: prev.recentFailures?.filter((e) => e.id !== exec.id) }
-          : prev,
-      );
-    } finally {
-      setRetrying((prev) => ({ ...prev, [exec.id]: false }));
-    }
-  };
+  const failures = failureRows.map((r: any) => ({
+    id: r.id,
+    taskId: r.taskId,
+    status: r.status,
+    errorMessage: r.errorMessage ?? undefined,
+    startedAt: r.startedAt.toISOString(),
+  }));
 
-  const failures = data?.recentFailures ?? [];
-
-  return (
-    <section>
-      <h1>Tasks</h1>
-      <p>Recurring and scheduled work.</p>
-
-      <h2 style={{ marginTop: 24 }}>Failed executions</h2>
-      {data === null ? (
-        <p>Loading…</p>
-      ) : failures.length === 0 ? (
-        <p>No failed executions.</p>
-      ) : (
-        <ul>
-          {failures.map((exec) => (
-            <li key={exec.id} style={{ marginBottom: 12 }}>
-              <span>
-                <strong>{exec.taskId}</strong>{" "}
-                <span style={{ fontSize: 12, color: "#888" }}>
-                  {new Date(exec.startedAt).toLocaleString()}
-                </span>
-              </span>
-              {exec.errorMessage && (
-                <p style={{ margin: "4px 0", color: "red", fontSize: 13 }}>{exec.errorMessage}</p>
-              )}
-              <button
-                disabled={retrying[exec.id] ?? false}
-                onClick={() => retry(exec)}
-                style={{ opacity: retrying[exec.id] ? 0.5 : 1 }}
-              >
-                {retrying[exec.id] ? "Retrying…" : "Retry"}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
+  return <TasksClient tasks={tasks} recentFailures={failures} />;
 }
