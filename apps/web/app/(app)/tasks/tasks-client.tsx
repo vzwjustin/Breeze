@@ -33,15 +33,19 @@ function scheduleLabel(schedule: Task["schedule"]): string {
 
 export function TasksClient({ tasks, recentFailures }: Props) {
   const [retrying, setRetrying] = useState<Record<string, boolean>>({});
+  const [retryError, setRetryError] = useState<string | null>(null);
 
   const retry = async (exec: Execution) => {
     setRetrying((prev) => ({ ...prev, [exec.id]: true }));
+    setRetryError(null);
     try {
-      await fetch("/api/tasks", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ taskId: exec.taskId }),
-      });
+      const res = await fetch(`/api/tasks/${exec.taskId}/retry`, { method: "POST" });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? `Retry failed (${res.status})`);
+      }
+    } catch (err) {
+      setRetryError((err as Error).message);
     } finally {
       setRetrying((prev) => ({ ...prev, [exec.id]: false }));
     }
@@ -149,6 +153,10 @@ export function TasksClient({ tasks, recentFailures }: Props) {
           </div>
         )}
       </section>
+
+      {retryError && (
+        <p style={{ fontSize: 13, color: "var(--color-error)", marginBottom: 16 }}>{retryError}</p>
+      )}
 
       {recentFailures.length > 0 && (
         <section>

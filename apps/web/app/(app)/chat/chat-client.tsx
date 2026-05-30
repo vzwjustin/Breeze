@@ -24,6 +24,7 @@ export function ChatClient({ chatId, initialMessages }: ChatClientProps) {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamEvents, setStreamEvents] = useState<TurnEvent[]>([]);
+  const [streamingReply, setStreamingReply] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -32,7 +33,7 @@ export function ChatClient({ chatId, initialMessages }: ChatClientProps) {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamEvents]);
+  }, [messages, streamEvents, streamingReply]);
 
   const autoResize = useCallback(() => {
     const el = textareaRef.current;
@@ -41,6 +42,48 @@ export function ChatClient({ chatId, initialMessages }: ChatClientProps) {
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, []);
 
+  const appendAssistantMessage = useCallback((content: string, messageId?: string) => {
+    const text = content.trim();
+    if (!text) return;
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: messageId ?? `asst-${Date.now()}`,
+        role: "assistant",
+        content: text,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+  }, []);
+
+  const handleTurnEvent = useCallback(
+    (event: TurnEvent) => {
+      setStreamEvents((prev) => [...prev, event]);
+
+      if (event.type === "plan.created" && event.plan && typeof event.plan === "object") {
+        const summary = (event.plan as { summaryText?: string }).summaryText;
+        if (summary?.trim()) setStreamingReply(summary.trim());
+      }
+
+      if (event.type === "assistant.message" && typeof event.content === "string") {
+        const partial = event.partial === true;
+        setStreamingReply(event.content);
+        if (!partial) {
+          appendAssistantMessage(event.content, typeof event.messageId === "string" ? event.messageId : undefined);
+          setStreamingReply(null);
+        }
+      }
+
+      if (event.type === "turn.completed" || event.type === "turn.paused") {
+        if (typeof event.content === "string") {
+          appendAssistantMessage(event.content);
+        }
+        setStreamingReply(null);
+      }
+    },
+    [appendAssistantMessage]
+  );
+
   const sendMessage = useCallback(async () => {
     const text = input.trim();
     if (!text || isStreaming) return;
@@ -48,6 +91,7 @@ export function ChatClient({ chatId, initialMessages }: ChatClientProps) {
     setInput("");
     setError(null);
     setStreamEvents([]);
+    setStreamingReply(null);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
     const optimisticId = `opt-${Date.now()}`;
@@ -77,7 +121,7 @@ export function ChatClient({ chatId, initialMessages }: ChatClientProps) {
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error((data as any).error ?? `Request failed: ${res.status}`);
+        throw new Error((data as { error?: string }).error ?? `Request failed: ${res.status}`);
       }
 
       const reader = res.body?.getReader();
@@ -85,7 +129,6 @@ export function ChatClient({ chatId, initialMessages }: ChatClientProps) {
 
       const decoder = new TextDecoder();
       let buffer = "";
-      let assistantText = "";
 
       while (true) {
         const { value, done } = await reader.read();
@@ -97,47 +140,48 @@ export function ChatClient({ chatId, initialMessages }: ChatClientProps) {
           const frame = buffer.slice(0, sep);
           buffer = buffer.slice(sep + 2);
 
+          let eventName: string | undefined;
           let eventId: string | undefined;
           let dataLine = "";
 
           for (const line of frame.split("\n")) {
-            if (line.startsWith("id:")) eventId = line.slice(3).trim();
+            if (line.startsWith("event:")) eventName = line.slice(6).trim();
+            else if (line.startsWith("id:")) eventId = line.slice(3).trim();
             else if (line.startsWith("data:")) dataLine = line.slice(5).trim();
           }
 
           if (eventId) lastEventIdRef.current = eventId;
+
+          if (eventName === "error" && dataLine) {
+            try {
+              const errPayload = JSON.parse(dataLine) as { message?: string };
+              throw new Error(errPayload.message ?? "Turn failed");
+            } catch (parseErr) {
+              if (parseErr instanceof Error && parseErr.message !== "Turn failed") throw parseErr;
+              throw new Error(dataLine);
+            }
+          }
+
           if (!dataLine) continue;
 
           try {
             const event = JSON.parse(dataLine) as TurnEvent;
-            setStreamEvents((prev) => [...prev, event]);
-
-            if (event.type === "turn.completed" || event.type === "turn.paused") {
-              if (assistantText) {
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    id: `asst-${Date.now()}`,
-                    role: "assistant",
-                    content: assistantText,
-                    createdAt: new Date().toISOString(),
-                  },
-                ]);
-              }
-            }
-          } catch {
-            // ignore parse errors
+            handleTurnEvent(event);
+          } catch (parseErr) {
+            if (parseErr instanceof Error && parseErr.message !== dataLine) throw parseErr;
           }
         }
       }
     } catch (err) {
       if ((err as Error).name === "AbortError") return;
       setError((err as Error).message);
+      setStreamingReply(null);
     } finally {
       setIsStreaming(false);
       setStreamEvents([]);
+      setStreamingReply(null);
     }
-  }, [input, isStreaming, chatId]);
+  }, [input, isStreaming, chatId, handleTurnEvent]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -150,6 +194,7 @@ export function ChatClient({ chatId, initialMessages }: ChatClientProps) {
     abortRef.current?.abort();
     setIsStreaming(false);
     setStreamEvents([]);
+    setStreamingReply(null);
   };
 
   const activeEvent = streamEvents[streamEvents.length - 1];
@@ -196,7 +241,19 @@ export function ChatClient({ chatId, initialMessages }: ChatClientProps) {
             <MessageBubble key={msg.id} message={msg} />
           ))}
 
-          {isStreaming && activeEvent && (
+          {isStreaming && streamingReply && (
+            <MessageBubble
+              message={{
+                id: "streaming-reply",
+                role: "assistant",
+                content: streamingReply,
+                createdAt: new Date().toISOString(),
+              }}
+              dimmed
+            />
+          )}
+
+          {isStreaming && activeEvent && !streamingReply && (
             <StreamingIndicator event={activeEvent} />
           )}
 
@@ -313,7 +370,7 @@ export function ChatClient({ chatId, initialMessages }: ChatClientProps) {
   );
 }
 
-function MessageBubble({ message }: { message: Message }) {
+function MessageBubble({ message, dimmed }: { message: Message; dimmed?: boolean }) {
   const isUser = message.role === "user";
 
   return (
@@ -324,6 +381,7 @@ function MessageBubble({ message }: { message: Message }) {
       animationName: "fadeIn",
       animationDuration: "200ms",
       animationFillMode: "forwards",
+      opacity: dimmed ? 0.85 : 1,
     }}>
       {!isUser && (
         <div style={{
@@ -371,6 +429,7 @@ function StreamingIndicator({ event }: { event: TurnEvent }) {
     "approval.requested": "Waiting for your approval",
     "turn.paused": "Paused — approval needed",
     "turn.completed": "Done",
+    "assistant.message": "Composing reply...",
   }[event.type] ?? event.type;
 
   return (

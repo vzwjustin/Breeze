@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "preferences" JSONB;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "policyProfileKey" TEXT;

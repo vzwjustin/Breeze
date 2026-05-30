@@ -146,3 +146,16 @@ pre, code {
 .animate-pulse {
   animation: pulse 1.5s ease infinite;
 }
+
+.breeze-page-header h1 {
+  margin: 0;
+}
+
+@media (max-width: 768px) {
+  aside[data-sidebar] {
+    transform: translateX(-100%);
+  }
+  main[data-main] {
+    margin-left: 0 !important;
+  }
+}

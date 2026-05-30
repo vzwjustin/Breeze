@@ -21,7 +21,20 @@ pnpm db:migrate
 pnpm dev
 ```
 
-Trigger.dev runs as a separate worker; see `packages/workflows`.
+Background jobs (recipes, scheduled tasks, approval expiry, event outbox) run via the built-in worker:
+
+```bash
+# Terminal 1 — web app
+pnpm dev
+
+# Terminal 2 — worker loop (set secret in .env)
+BREEZE_CRON_SECRET=dev pnpm --filter @breeze/web worker
+
+# Or trigger one tick via HTTP (production cron)
+curl -X POST -H "Authorization: Bearer $BREEZE_CRON_SECRET" http://localhost:3000/api/internal/worker/tick
+```
+
+`packages/workflows` holds the engine-agnostic task runners; `apps/web/src/server/worker` wires them to Prisma and the broker.
 
 ## Product model
 

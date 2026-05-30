@@ -47,18 +47,43 @@ function mapRow(row: Record<string, unknown>): MemoryRecord {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function createMemoryStore(prisma: any): MemoryReader & MemoryWriter {
   return {
-    async pack({ userId, limit = 50 }) {
+    async pack({ userId, chatId, taskRunId, intentTags, limit = 50 }) {
+      const notExpired = {
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      };
+
+      const scopeFilter =
+        chatId || taskRunId
+          ? {
+              OR: [
+                { type: "USER" },
+                ...(chatId ? [{ type: "CONVERSATION", scope: chatId }] : []),
+                ...(taskRunId ? [{ type: "WORKING", scope: taskRunId }] : []),
+              ],
+            }
+          : null;
+
       const rows = await prisma.memory.findMany({
         where: {
           userId,
           deletedAt: null,
-          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+          AND: [notExpired, ...(scopeFilter ? [scopeFilter] : [])],
         },
         orderBy: { updatedAt: "desc" },
         take: Math.min(limit, 200),
       });
 
-      return rows.map(mapRow);
+      let records = rows.map(mapRow);
+      if (intentTags?.length) {
+        const tagSet = new Set(intentTags.map((t) => t.toLowerCase()));
+        records = records.filter((rec: MemoryRecord) => {
+          if (!rec.value || typeof rec.value !== "object") return true;
+          const tags = (rec.value as { tags?: unknown }).tags;
+          if (!Array.isArray(tags)) return true;
+          return tags.some((t) => typeof t === "string" && tagSet.has(t.toLowerCase()));
+        });
+      }
+      return records;
     },
 
     async save(rec) {

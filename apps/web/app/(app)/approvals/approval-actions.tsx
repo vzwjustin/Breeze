@@ -12,15 +12,25 @@ export function ApprovalActions({ approval }: Props) {
   const router = useRouter();
   const [pending, setPending] = useState<"approve" | "deny" | null>(null);
   const [note, setNote] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
   const act = async (action: "approve" | "deny") => {
     setPending(action);
+    setError(null);
     try {
-      await fetch(`/api/approvals/${approval.id}/${action}`, {
+      const res = await fetch(`/api/approvals/${approval.id}/${action}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ note: note.trim() || undefined }),
       });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; execution?: { ok: boolean; detail: string } };
+      if (!res.ok) {
+        setError(data.error ?? `Request failed (${res.status})`);
+        return;
+      }
+      if (action === "approve" && data.execution && !data.execution.ok) {
+        setError(data.execution.detail);
+      }
       router.refresh();
     } finally {
       setPending(null);
@@ -41,6 +51,10 @@ export function ApprovalActions({ approval }: Props) {
             <span style={{ color: "green" }}>+ {approval.preview.payloadDiff.after}</span>
           </pre>
         </details>
+      )}
+
+      {error && (
+        <p style={{ fontSize: 12, color: "var(--color-error)", marginBottom: 8 }}>{error}</p>
       )}
 
       <textarea

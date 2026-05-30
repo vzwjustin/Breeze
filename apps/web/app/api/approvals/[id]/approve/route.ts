@@ -27,6 +27,6 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   }
 
   const body = Body.parse(await req.json().catch(() => ({})));
-  const approval = await ApprovalService.approve(params.id, user.id, body);
-  return NextResponse.json({ approval });
+  const result = await ApprovalService.approve(params.id, user.id, body);
+  return NextResponse.json(result);
 }

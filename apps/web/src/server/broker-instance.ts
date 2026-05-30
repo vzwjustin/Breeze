@@ -1,8 +1,8 @@
 import { createBroker, type Broker } from "@breeze/broker";
 import { createLogger, BreezeError, type PolicyProfile } from "@breeze/common";
-import { prisma, decryptString } from "@breeze/db";
+import { prisma, decryptString, encryptString } from "@breeze/db";
 import { getBuiltinProfile } from "@breeze/policy/profiles";
-import type { ConnectorAccountHandle, ConnectorTokens, ConnectorCapability } from "@breeze/connectors";
+import { getConnector, type ConnectorAccountHandle, type ConnectorTokens, type ConnectorCapability } from "@breeze/connectors";
 import type { ApprovalPreview, ActionRequest, PolicyDecision } from "@breeze/common";
 
 const db = prisma as any;
@@ -11,8 +11,19 @@ const brokerLogger = createLogger({ component: "broker" });
 async function getUserPolicyProfile(userId: string): Promise<PolicyProfile> {
   const user = await db.user.findUnique({
     where: { id: userId },
-    include: { policyProfile: true },
+    select: {
+      policyProfileKey: true,
+      policyProfile: {
+        select: { id: true, name: true, kind: true, rules: true },
+      },
+    },
   });
+
+  const key = user?.policyProfileKey as string | null | undefined;
+  if (key) {
+    const builtin = getBuiltinProfile(key);
+    if (builtin) return builtin;
+  }
 
   if (user?.policyProfile) {
     return {
@@ -66,16 +77,40 @@ async function getFreshTokens(account: ConnectorAccountHandle): Promise<Connecto
     expiresAt?: string;
   };
 
-  if (credential.expiresAt && new Date(credential.expiresAt) < new Date()) {
+  const expiresAt = credential.expiresAt ? new Date(credential.expiresAt) : undefined;
+  const tokens: ConnectorTokens = {
+    accessToken: raw.accessToken,
+    refreshToken: raw.refreshToken,
+    expiresAt,
+    raw: raw as Record<string, unknown>,
+  };
+
+  if (expiresAt && expiresAt < new Date()) {
+    const connector = getConnector(account.connectorKey);
+    if (connector?.meta.oauth.refresh && tokens.refreshToken) {
+      const refreshed = await connector.meta.oauth.refresh(tokens);
+      const encryptedTokens = encryptString(
+        JSON.stringify({
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken ?? tokens.refreshToken,
+          expiresAt: refreshed.expiresAt?.toISOString(),
+          raw: refreshed.raw,
+        })
+      );
+      await db.connectorCredential.update({
+        where: { accountId: account.id },
+        data: {
+          encryptedTokens: Buffer.from(encryptedTokens),
+          expiresAt: refreshed.expiresAt ?? null,
+          updatedAt: new Date(),
+        },
+      });
+      return refreshed;
+    }
     throw new BreezeError("auth", `Tokens expired for connector ${account.connectorKey}`);
   }
 
-  return {
-    accessToken: raw.accessToken,
-    refreshToken: raw.refreshToken,
-    expiresAt: credential.expiresAt ?? undefined,
-    raw: raw as Record<string, unknown>,
-  };
+  return tokens;
 }
 
 async function findByIdempotencyKey(key: string) {

@@ -7,7 +7,7 @@ export default async function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div style={{ display: "flex", minHeight: "100dvh", background: "var(--color-surface-muted)" }}>
-      <aside style={{
+      <aside data-sidebar style={{
         width: 240,
         background: "var(--color-sidebar-bg)",
         display: "flex",
@@ -47,6 +47,7 @@ export default async function AppShell({ children }: { children: ReactNode }) {
             <NavItem href="/chat" icon="chat" label="Chat" />
             <NavItem href="/tasks" icon="task" label="Tasks" />
             <NavItem href="/approvals" icon="approval" label="Approvals" />
+            <NavItem href="/recipes" icon="recipe" label="Recipes" />
           </ul>
 
           <div style={{
@@ -100,6 +101,7 @@ export default async function AppShell({ children }: { children: ReactNode }) {
 
       <main
         id="main-content"
+        data-main
         style={{
           flex: 1,
           marginLeft: 240,
