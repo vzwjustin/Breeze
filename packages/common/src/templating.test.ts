@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { renderTemplate } from "./templating.js";
+import {
+  extractTemplatePaths,
+  hasTemplateVariables,
+  pruneRenderedTemplate,
+  renderTemplate,
+  safeStringify,
+} from "./templating.js";
 import type { TemplateScope } from "./templating.js";
 
 // ── Whole-string placeholders ──────────────────────────────────────────
@@ -185,12 +191,47 @@ describe("circular references", () => {
     expect(result).toBe(circ);
   });
 
-  it("partial placeholder with circular object serializes via JSON (may throw) or is handled", () => {
+  it("partial placeholder with circular object uses safeStringify without throwing", () => {
     const circ: Record<string, unknown> = {};
     circ.self = circ;
     const scope: TemplateScope = { circ };
-    // In partial context, renderString calls JSON.stringify — this will throw
-    // The test verifies the call does NOT hang indefinitely
-    expect(() => renderTemplate("prefix_{{circ}}", scope)).toThrow();
+    expect(renderTemplate("prefix_{{circ}}", scope)).toBe('prefix_{"self":"[Circular]"}');
+  });
+});
+
+// ── Utilities ──────────────────────────────────────────────────────────
+
+describe("hasTemplateVariables", () => {
+  it("detects placeholders in strings and nested structures", () => {
+    expect(hasTemplateVariables("{{a}}")).toBe(true);
+    expect(hasTemplateVariables("plain")).toBe(false);
+    expect(hasTemplateVariables({ x: "{{y}}" })).toBe(true);
+    expect(hasTemplateVariables([1, "{{z}}"])).toBe(true);
+  });
+});
+
+describe("extractTemplatePaths", () => {
+  it("returns sorted unique paths", () => {
+    expect(extractTemplatePaths({ a: "{{item.id}}", b: "x {{item.repo}} {{item.id}}" })).toEqual([
+      "item.id",
+      "item.repo",
+    ]);
+  });
+});
+
+describe("pruneRenderedTemplate", () => {
+  it("removes keys whose whole-string placeholder was undefined", () => {
+    expect(pruneRenderedTemplate({ keep: "ok", drop: undefined, nested: { also: undefined, stay: 1 } })).toEqual({
+      keep: "ok",
+      nested: { stay: 1 },
+    });
+  });
+});
+
+describe("safeStringify", () => {
+  it("handles circular references", () => {
+    const circ: Record<string, unknown> = {};
+    circ.self = circ;
+    expect(safeStringify(circ)).toBe('{"self":"[Circular]"}');
   });
 });

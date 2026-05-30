@@ -11,6 +11,7 @@
 import {
   idempotencyKey,
   newId,
+  pruneRenderedTemplate,
   renderTemplate,
   type ActionOutcome,
   type ActionRequest,
@@ -112,7 +113,7 @@ export async function runRecipe(
 
       for (let i = 0; i < recipe.actions.length; i++) {
         const action = recipe.actions[i]!;
-        const rendered = renderTemplate(action.inputTemplate, scope);
+        const rendered = pruneRenderedTemplate(renderTemplate(action.inputTemplate, scope));
         const [actionConnector] = action.capability.split(".");
         if (!actionConnector) throw new Error(`Malformed capability: ${action.capability}`);
         const req: ActionRequest = {
