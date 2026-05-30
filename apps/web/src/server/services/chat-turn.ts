@@ -14,6 +14,8 @@ import {
 import { getBroker } from "@/server/broker-instance";
 import { getAI } from "@/server/ai-instance";
 import { ChatService, type ChatRow, type MessageRow } from "./chat-service";
+import { PlanService } from "./plan-service";
+import { executeNonActStep } from "./step-executor";
 import type { AuthedUser } from "@/server/auth/require-user";
 
 export interface TurnArgs {
@@ -32,10 +34,8 @@ export const ChatTurn = {
     const ctx = await ChatService.buildContext(chat, user.id);
     const ai = await getAI(user.id);
 
-    const streamPlanner = process.env.BREEZE_STREAM_PLANNER === "1" && ai.kind === "anthropic";
-    void streamPlanner;
-
-    const plan: Plan = await plannerPlan(ctx as Parameters<typeof plannerPlan>[0], { ai });
+    const rawPlan: Plan = await plannerPlan(ctx as Parameters<typeof plannerPlan>[0], { ai });
+    const plan = await PlanService.save(rawPlan, userMessage.id);
 
     write({ type: "plan.created", plan });
     write({ type: "assistant.message", content: plan.summaryText, partial: true });
@@ -44,6 +44,7 @@ export const ChatTurn = {
 
     for (const step of plan.steps) {
       if (signal?.aborted) {
+        await PlanService.finishPlan(plan.id, "CANCELED");
         await finishTurn({
           chat,
           plan,
@@ -54,11 +55,35 @@ export const ChatTurn = {
         });
         return;
       }
+
       write({ type: "step.started", stepId: step.id, kind: step.kind });
+      await PlanService.markStepRunning(step.id);
+
       if (step.kind === "act") {
-        const req = buildActionRequest(step, user.id, chat.id);
-        const outcome = await getBroker().submit(req);
-        if (outcome.kind === "approval_required") {
+        const handled = await runActStep({
+          step,
+          userId: user.id,
+          chat,
+          plan,
+          stepOutcomes,
+          write,
+          close,
+        });
+        if (handled) return;
+        continue;
+      }
+
+      try {
+        const result = await executeNonActStep(step, {
+          userId: user.id,
+          chatId: chat.id,
+          plan,
+          ai,
+          model: ctx.model,
+        });
+
+        if (result.brokerOutcome?.kind === "approval_required") {
+          await PlanService.markStepAwaitingApproval(step.id);
           stepOutcomes.push({
             stepId: step.id,
             kind: step.kind,
@@ -66,7 +91,12 @@ export const ChatTurn = {
             label: step.capability,
             detail: "awaiting approval",
           });
-          write({ type: "approval.requested", approvalId: outcome.approvalId, stepId: step.id });
+          write({
+            type: "approval.requested",
+            approvalId: result.brokerOutcome.approvalId,
+            stepId: step.id,
+          });
+          await PlanService.finishPlan(plan.id, "CANCELED");
           await finishTurn({
             chat,
             plan,
@@ -78,15 +108,18 @@ export const ChatTurn = {
           });
           return;
         }
-        if (outcome.kind === "denied") {
+
+        if (result.status === "failed") {
+          await PlanService.markStepFailed(step.id, result.detail ?? "failed");
           stepOutcomes.push({
             stepId: step.id,
             kind: step.kind,
             status: "failed",
             label: step.capability,
-            detail: outcome.reason,
+            detail: result.detail,
           });
-          write({ type: "step.failed", stepId: step.id, reason: outcome.reason });
+          write({ type: "step.failed", stepId: step.id, reason: result.detail });
+          await PlanService.finishPlan(plan.id, "FAILED");
           await finishTurn({
             chat,
             plan,
@@ -97,40 +130,28 @@ export const ChatTurn = {
           });
           return;
         }
-        if (outcome.kind === "failed") {
-          stepOutcomes.push({
-            stepId: step.id,
-            kind: step.kind,
-            status: "failed",
-            label: step.capability,
-            detail: outcome.errorMessage,
-          });
-          write({ type: "step.failed", stepId: step.id, reason: outcome.errorMessage });
-          await finishTurn({
-            chat,
-            plan,
-            status: "failed",
-            stepOutcomes,
-            write,
-            close,
-          });
-          return;
-        }
-        const detail = summarizeActionResult(outcome.result.output);
+
+        await PlanService.markStepCompleted(step.id, result.detail);
         stepOutcomes.push({
           stepId: step.id,
           kind: step.kind,
           status: "completed",
           label: step.capability,
-          detail,
+          detail: result.detail,
         });
-        write({ type: "step.completed", stepId: step.id, result: outcome.result });
-      } else {
-        stepOutcomes.push({ stepId: step.id, kind: step.kind, status: "completed" });
-        write({ type: "step.completed", stepId: step.id });
+        write({ type: "step.completed", stepId: step.id, result: { detail: result.detail } });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await PlanService.markStepFailed(step.id, msg);
+        stepOutcomes.push({ stepId: step.id, kind: step.kind, status: "failed", detail: msg });
+        write({ type: "step.failed", stepId: step.id, reason: msg });
+        await PlanService.finishPlan(plan.id, "FAILED");
+        await finishTurn({ chat, plan, status: "failed", stepOutcomes, write, close });
+        return;
       }
     }
 
+    await PlanService.finishPlan(plan.id, "COMPLETED");
     await finishTurn({
       chat,
       plan,
@@ -141,6 +162,99 @@ export const ChatTurn = {
     });
   },
 };
+
+async function runActStep(args: {
+  step: PlanStep;
+  userId: string;
+  chat: ChatRow;
+  plan: Plan;
+  stepOutcomes: StepOutcomeLine[];
+  write: (event: unknown) => void;
+  close: () => void;
+}): Promise<boolean> {
+  const { step, userId, chat, plan, stepOutcomes, write, close } = args;
+  const req = buildActionRequest(step, userId, chat.id);
+  const outcome = await getBroker().submit(req);
+
+  if (outcome.kind === "approval_required") {
+    await PlanService.markStepAwaitingApproval(step.id);
+    stepOutcomes.push({
+      stepId: step.id,
+      kind: step.kind,
+      status: "skipped",
+      label: step.capability,
+      detail: "awaiting approval",
+    });
+    write({ type: "approval.requested", approvalId: outcome.approvalId, stepId: step.id });
+    await PlanService.finishPlan(plan.id, "CANCELED");
+    await finishTurn({
+      chat,
+      plan,
+      status: "paused",
+      stepOutcomes,
+      pauseReason: "awaiting_approval",
+      write,
+      close,
+    });
+    return true;
+  }
+
+  if (outcome.kind === "denied") {
+    await PlanService.markStepFailed(step.id, outcome.reason);
+    stepOutcomes.push({
+      stepId: step.id,
+      kind: step.kind,
+      status: "failed",
+      label: step.capability,
+      detail: outcome.reason,
+    });
+    write({ type: "step.failed", stepId: step.id, reason: outcome.reason });
+    await PlanService.finishPlan(plan.id, "FAILED");
+    await finishTurn({
+      chat,
+      plan,
+      status: "failed",
+      stepOutcomes,
+      write,
+      close,
+    });
+    return true;
+  }
+
+  if (outcome.kind === "failed") {
+    await PlanService.markStepFailed(step.id, outcome.errorMessage);
+    stepOutcomes.push({
+      stepId: step.id,
+      kind: step.kind,
+      status: "failed",
+      label: step.capability,
+      detail: outcome.errorMessage,
+    });
+    write({ type: "step.failed", stepId: step.id, reason: outcome.errorMessage });
+    await PlanService.finishPlan(plan.id, "FAILED");
+    await finishTurn({
+      chat,
+      plan,
+      status: "failed",
+      stepOutcomes,
+      write,
+      close,
+    });
+    return true;
+  }
+
+  const detail = summarizeActionResult(outcome.result.output);
+  await PlanService.markStepCompleted(step.id, detail);
+  stepOutcomes.push({
+    stepId: step.id,
+    kind: step.kind,
+    status: "completed",
+    label: step.capability,
+    detail,
+  });
+  write({ type: "step.completed", stepId: step.id, result: outcome.result });
+  return false;
+}
 
 async function finishTurn(args: {
   chat: ChatRow;

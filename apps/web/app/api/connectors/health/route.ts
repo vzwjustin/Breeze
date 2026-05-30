@@ -9,6 +9,8 @@ import { prisma } from "@breeze/db";
 
 export const runtime = "nodejs";
 
+const db = prisma as any;
+
 export async function GET(_req: NextRequest) {
   const { user } = await requireUser();
 
@@ -25,17 +27,32 @@ export async function GET(_req: NextRequest) {
     throw err;
   }
 
-  const accounts = await (prisma as unknown as {
-    connectorAccount: { findMany: (args: unknown) => Promise<Array<{ id: string; connector: string; tokenExpiresAt?: Date | null }>> };
-  }).connectorAccount.findMany({ where: { userId: user.id } });
+  const accounts = await db.connectorAccount.findMany({
+    where: { userId: user.id, deletedAt: null },
+    select: {
+      id: true,
+      connectorKey: true,
+      status: true,
+      credential: { select: { expiresAt: true } },
+    },
+  });
 
   const checkedAt = new Date().toISOString();
   const now = Date.now();
-  const connectors = accounts.map((a) => {
-    const expMs = a.tokenExpiresAt ? new Date(a.tokenExpiresAt).getTime() : null;
-    const status = expMs !== null && expMs < now ? "token_expired" : "ok";
-    return { connector: a.connector, accountId: a.id, status, checkedAt };
-  });
+  const connectors = accounts.map(
+    (a: {
+      id: string;
+      connectorKey: string;
+      status: string;
+      credential: { expiresAt: Date | null } | null;
+    }) => {
+      const expMs = a.credential?.expiresAt ? new Date(a.credential.expiresAt).getTime() : null;
+      let status = String(a.status).toLowerCase();
+      if (expMs !== null && expMs < now) status = "token_expired";
+      if (status === "active") status = "ok";
+      return { connector: a.connectorKey, accountId: a.id, status, checkedAt };
+    }
+  );
 
   return NextResponse.json({ connectors });
 }

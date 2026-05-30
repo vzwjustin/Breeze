@@ -1,5 +1,6 @@
 import { prisma } from "@breeze/db";
 import { publicCatalog } from "@breeze/connectors";
+import { createMemoryStore } from "@breeze/memory";
 import {
   BreezeError,
   type MemoryRecord,
@@ -37,6 +38,7 @@ export interface ChatContext {
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
+const memoryStore = createMemoryStore(prisma);
 
 function mapRole(role: string): MessageRow["role"] {
   const r = role.toUpperCase();
@@ -78,23 +80,22 @@ export const ChatService = {
   },
 
   async buildContext(chat: ChatRow, userId: string): Promise<ChatContext> {
-    const [messages, memories, accounts, user] = await Promise.all([
+    const [messages, memoryPack, accounts, user] = await Promise.all([
       db.message.findMany({
         where: { chatId: chat.id },
         orderBy: { createdAt: "desc" },
         take: 20,
         select: { id: true, role: true, content: true },
       }),
-      db.memory.findMany({
-        where: { userId, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
-        orderBy: { updatedAt: "desc" },
-        take: 50,
-      }),
+      memoryStore.pack({ userId, chatId: chat.id, limit: 50 }),
       db.connectorAccount.findMany({
-        where: { userId, status: "ACTIVE" },
+        where: { userId, status: "ACTIVE", deletedAt: null },
         select: { connectorKey: true },
       }),
-      db.user.findUnique({ where: { id: userId }, select: { id: true } }),
+      db.user.findUnique({
+        where: { id: userId },
+        select: { id: true, preferences: true },
+      }),
     ]);
     if (!user) throw new BreezeError("not_found", "User not found");
 
@@ -108,20 +109,11 @@ export const ChatService = {
         content: extractText(m.content),
       }));
 
-    const memoryPack: MemoryRecord[] = memories.map((m: Record<string, unknown>) => ({
-      id: String(m.id),
-      userId: String(m.userId),
-      type: String(m.type).toLowerCase() as MemoryRecord["type"],
-      scope: m.scope ? String(m.scope) : undefined,
-      key: String(m.key),
-      value: m.value,
-      source: (m.source as MemoryRecord["source"]) ?? { kind: "system" },
-      reason: String(m.reason ?? ""),
-      visibility: String(m.visibility).toLowerCase() as MemoryRecord["visibility"],
-      expiresAt: m.expiresAt ? new Date(m.expiresAt as string).toISOString() : undefined,
-      createdAt: new Date(m.createdAt as string).toISOString(),
-      updatedAt: new Date(m.updatedAt as string).toISOString(),
-    }));
+    const prefs = user.preferences as { plannerModel?: string } | null | undefined;
+    const model =
+      prefs?.plannerModel?.trim() ||
+      process.env.BREEZE_PLANNER_MODEL ||
+      "claude-sonnet-4-6";
 
     const connected = new Set<string>(accounts.map((a: { connectorKey: string }) => a.connectorKey));
 
@@ -129,7 +121,7 @@ export const ChatService = {
       userId,
       chatId: chat.id,
       messageId: latestMessage.id,
-      model: process.env.BREEZE_PLANNER_MODEL ?? "claude-sonnet-4-6",
+      model,
       history,
       memoryPack,
       catalog: publicCatalog(connected),
@@ -143,9 +135,12 @@ export const ChatService = {
       where: { id: stepId },
       data: {
         status: isError ? "FAILED" : "COMPLETED",
-        output: isError ? null : (result as object),
+        resultSummary: isError
+          ? null
+          : typeof result === "string"
+            ? result
+            : JSON.stringify(result),
         errorMessage: isError ? (result as Error).message : null,
-        endedAt: new Date(),
       },
     });
   },

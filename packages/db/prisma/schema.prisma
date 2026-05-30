@@ -23,13 +23,16 @@ enum Role {
 }
 
 model User {
-  id              String         @id @default(cuid())
-  email           String         @unique
-  name            String?
-  image           String?
-  role            Role           @default(USER)
-  policyProfileId String?
-  policyProfile   PolicyProfile? @relation("UserPolicyProfile", fields: [policyProfileId], references: [id])
+  id                String         @id @default(cuid())
+  email             String         @unique
+  name              String?
+  image             String?
+  role              Role           @default(USER)
+  preferences       Json?
+  /// Builtin profile id (e.g. builtin.auto_run_safe_actions) or custom PolicyProfile cuid.
+  policyProfileKey  String?
+  policyProfileId   String?
+  policyProfile     PolicyProfile? @relation("UserPolicyProfile", fields: [policyProfileId], references: [id])
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

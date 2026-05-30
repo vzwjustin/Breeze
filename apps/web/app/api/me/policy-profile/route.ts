@@ -22,12 +22,26 @@ export async function PATCH(req: NextRequest) {
     if (!custom) {
       return NextResponse.json({ error: "Policy profile not found" }, { status: 404 });
     }
+    await db.user.update({
+      where: { id: user.id },
+      data: { policyProfileId, policyProfileKey: null },
+    });
+  } else {
+    await db.user.update({
+      where: { id: user.id },
+      data: { policyProfileKey: policyProfileId, policyProfileId: null },
+    });
   }
 
-  await db.user.update({
-    where: { id: user.id },
-    data: { policyProfileId },
-  });
+  return NextResponse.json({ ok: true, policyProfileId });
+}
 
-  return NextResponse.json({ ok: true });
+export async function GET(_req: NextRequest) {
+  const { user } = await requireUser();
+  const row = await db.user.findUnique({
+    where: { id: user.id },
+    select: { policyProfileKey: true, policyProfileId: true },
+  });
+  const active = row?.policyProfileKey ?? row?.policyProfileId ?? "builtin.auto_run_safe_actions";
+  return NextResponse.json({ policyProfileId: active });
 }

@@ -7,6 +7,9 @@ import {
   type ApprovalStatus,
   type RiskLevel,
 } from "@breeze/common";
+import { getBroker } from "@/server/broker-instance";
+import { PlanService } from "./plan-service";
+import { ChatService } from "./chat-service";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
@@ -34,6 +37,17 @@ function mapRow(row: Record<string, unknown>): Approval {
     waitToken: (row.waitToken as string | null) ?? undefined,
     createdAt: new Date(row.createdAt as string).toISOString(),
   };
+}
+
+function summarizeOutcome(output: Record<string, unknown> | undefined): string {
+  if (!output) return "Action completed.";
+  if (typeof output.summary === "string") return output.summary;
+  if (typeof output.message === "string") return output.message;
+  try {
+    return JSON.stringify(output).slice(0, 500);
+  } catch {
+    return "Action completed.";
+  }
 }
 
 /**
@@ -72,8 +86,8 @@ export const ApprovalService = {
     id: string,
     userId: string,
     opts: { edit?: Record<string, unknown>; note?: string } = {}
-  ): Promise<Approval> {
-    return db.$transaction(async (tx: Record<string, Record<string, Function>>) => {
+  ): Promise<{ approval: Approval; execution?: { ok: boolean; detail: string } }> {
+    const approval = await db.$transaction(async (tx: Record<string, Record<string, Function>>) => {
       const current = await (tx.approval as { findFirst: Function }).findFirst({ where: { id, userId } });
       if (!current) throw new BreezeError("not_found", "Approval not found");
       if (String(current.status) !== "PENDING") {
@@ -94,6 +108,33 @@ export const ApprovalService = {
       });
       return mapRow(row as Record<string, unknown>);
     });
+
+    let execution: { ok: boolean; detail: string } | undefined;
+    try {
+      const outcome = await getBroker().resumeAfterApproval(id);
+      if (outcome.kind === "allowed") {
+        const detail = summarizeOutcome(outcome.result.output);
+        await PlanService.markStepCompleted(approval.planStepId, detail);
+        const step = await PlanService.getStep(approval.planStepId);
+        if (step?.plan?.chatId) {
+          await ChatService.appendAssistantMessage(step.plan.chatId, {
+            text: `Approved and completed: ${detail}`,
+          });
+        }
+        execution = { ok: true, detail };
+      } else if (outcome.kind === "failed") {
+        await PlanService.markStepFailed(approval.planStepId, outcome.errorMessage);
+        execution = { ok: false, detail: outcome.errorMessage };
+      } else if (outcome.kind === "denied") {
+        await PlanService.markStepFailed(approval.planStepId, outcome.reason);
+        execution = { ok: false, detail: outcome.reason };
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      execution = { ok: false, detail: msg };
+    }
+
+    return { approval, execution };
   },
 
   async deny(id: string, userId: string, note?: string): Promise<Approval> {
@@ -107,6 +148,7 @@ export const ApprovalService = {
         where: { id },
         data: { status: "DENIED", decidedAt: new Date(), decisionNote: note ?? null },
       });
+      await PlanService.markStepFailed(String(current.planStepId), note ?? "denied by user");
       return mapRow(row as Record<string, unknown>);
     });
   },
