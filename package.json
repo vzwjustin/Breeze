@@ -17,7 +17,9 @@
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "db:generate": "pnpm --filter @breeze/db generate",
-    "db:migrate": "pnpm --filter @breeze/db migrate"
+    "db:migrate": "pnpm --filter @breeze/db migrate",
+    "worker": "node --import tsx scripts/breeze-worker.ts",
+    "worker:tick": "curl -s -X POST -H \"Authorization: Bearer $BREEZE_CRON_SECRET\" http://localhost:3000/api/internal/worker/tick"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

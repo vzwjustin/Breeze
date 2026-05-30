@@ -10,6 +10,7 @@ import {
 import { getBroker } from "@/server/broker-instance";
 import { PlanService } from "./plan-service";
 import { ChatService } from "./chat-service";
+import { continuePlanAfterApproval } from "./turn-continuation";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = prisma as any;
@@ -117,9 +118,12 @@ export const ApprovalService = {
         await PlanService.markStepCompleted(approval.planStepId, detail);
         const step = await PlanService.getStep(approval.planStepId);
         if (step?.plan?.chatId) {
-          await ChatService.appendAssistantMessage(step.plan.chatId, {
-            text: `Approved and completed: ${detail}`,
-          });
+          const followUp = await continuePlanAfterApproval({
+            planId: step.plan.id,
+            fromStepId: approval.planStepId,
+            userId,
+          }).catch(() => `Approved and completed: ${detail}`);
+          await ChatService.appendAssistantMessage(step.plan.chatId, { text: followUp });
         }
         execution = { ok: true, detail };
       } else if (outcome.kind === "failed") {

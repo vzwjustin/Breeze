@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BreezeError } from "@breeze/common";
+import { BreezeError, newId } from "@breeze/common";
 import { registerConnector } from "../registry.js";
 import type { Connector, ConnectorCapability, ConnectorTokens } from "../types.js";
 import { httpJson, requireEnv, env } from "../http.js";
@@ -9,6 +9,9 @@ const GH_HEADERS = {
   "X-GitHub-Api-Version": "2022-11-28",
   Accept: "application/vnd.github+json",
 };
+
+/** In-process draft store until artifacts are wired through the broker. */
+const commentDrafts = new Map<string, { repo: string; number: number; body: string }>();
 
 function splitRepo(repo: string): { owner: string; name: string } {
   const [owner, name] = repo.split("/");
@@ -127,11 +130,9 @@ const draftComment: ConnectorCapability = {
   outputSchema: z.object({ artifactId: z.string() }),
   execute: async (input) => {
     const { repo, number, body } = input as { repo: string; number: number; body: string };
-    // Drafts are internal artifacts; they are not persisted to GitHub. The
-    // broker records the draft and returns an artifact id; downstream
-    // post_comment consumes it by reference.
-    const artifactId = `gh-draft-${repo.replace("/", "-")}-${number}-${Date.now().toString(36)}`;
     if (!body.trim()) throw new BreezeError("validation", "Comment body is empty");
+    const artifactId = newId();
+    commentDrafts.set(artifactId, { repo, number, body: body.trim() });
     return { artifactId };
   },
 };
@@ -147,11 +148,24 @@ const postComment: ConnectorCapability = {
   inputSchema: z.object({
     repo: z.string(),
     number: z.number().int().positive(),
-    body: z.string(),
+    body: z.string().optional(),
+    artifactId: z.string().optional(),
   }),
   outputSchema: z.object({ commentId: z.string() }),
   execute: async (input, ctx) => {
-    const { repo, number, body } = input as { repo: string; number: number; body: string };
+    const parsed = input as { repo: string; number: number; body?: string; artifactId?: string };
+    let body = parsed.body?.trim();
+    if (parsed.artifactId) {
+      const draft = commentDrafts.get(parsed.artifactId);
+      if (!draft) throw new BreezeError("not_found", `Draft ${parsed.artifactId} not found`);
+      if (draft.repo !== parsed.repo || draft.number !== parsed.number) {
+        throw new BreezeError("validation", "Draft does not match repo/number");
+      }
+      body = draft.body;
+      commentDrafts.delete(parsed.artifactId);
+    }
+    if (!body) throw new BreezeError("validation", "Comment body is empty");
+    const { repo, number } = parsed;
     const { owner, name } = splitRepo(repo);
     const res = await httpJson<{ id: number }>({
       url: `${API}/repos/${owner}/${name}/issues/${number}/comments`,

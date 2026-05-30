@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-type IconKind = "chat" | "task" | "approval" | "connector" | "memory" | "settings";
+type IconKind = "chat" | "task" | "approval" | "recipe" | "connector" | "memory" | "settings";
 
 const ICONS: Record<IconKind, ReactNode> = {
   chat: (
@@ -25,6 +25,15 @@ const ICONS: Record<IconKind, ReactNode> = {
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M9 12l2 2 4-4"/>
       <path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/>
+    </svg>
+  ),
+  recipe: (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3v3"/>
+      <path d="M12 18v3"/>
+      <path d="M3 12h3"/>
+      <path d="M18 12h3"/>
+      <circle cx="12" cy="12" r="4"/>
     </svg>
   ),
   connector: (
